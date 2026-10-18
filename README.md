@@ -36,11 +36,11 @@ We implement a specific naming scheme to keep our hybrid codebase clean. Please 
 *   **Variables:** `lowercase` &nbsp;➔&nbsp; `payload`, `buffer`
 *   **Constants:** `SCREAMING_SNAKE_CASE` &nbsp;➔&nbsp; `MAX_BUFFER_SIZE`, `PORT_NUMBER`
 
-> 💡 *Note: Additional specific naming rules will be updated as the project scales.*
+>  *Note: Additional specific naming rules will be updated as the project scales.*
 
 ---
 
-## ❓ Frequently Asked Questions (FAQ)
+##  Frequently Asked Questions (FAQ)
 
 #### Q: Where should I put external libraries?
 **A:** Place all source codes or standalone files of external dependencies inside the designated directory:
