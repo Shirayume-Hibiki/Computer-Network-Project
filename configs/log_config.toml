@@ -1,0 +1,3 @@
+[logging]
+log_dir = "./socket project/logs"
+time_format = "%d/%m/%Y ~ %H:%M:%S"
