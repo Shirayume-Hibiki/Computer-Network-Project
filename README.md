@@ -8,11 +8,11 @@
 5. Internal libraries imports
 
 - Naming conventions
-+ Functions: Use `camelCase`
-+ Classes: Use `PascalCase`
-+ Variables: Use `lowercase`
-+ Constants: Use `SCREAMING_SNAKE_CASE`
-  ## I'll add more later
+1. Functions: Use `camelCase`
+2. Classes: Use `PascalCase`
+3. Variables: Use `lowercase`
+4. Constants: Use `SCREAMING_SNAKE_CASE`
+  ''' I'll add more later '''
 
 * Commonly asked questions:
 - Where should I put external libraries?
