@@ -1,3 +1,8 @@
+'''~~~~~~~~~~~~~~~
+Creator: Shirayume_Hibiki
+Date of creation: 18/10/2026
+Edit dates:
+~~~~~~~~~~~~~~~'''
 import sys
 import socket
 import time
