@@ -10,7 +10,7 @@ from cn_logging import CNLogger as log
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-SERVER_CONFIG_PATH = "./socket project/configs/server_config.toml"
+SERVER_CONFIG_PATH = "./main/configs/server_config.toml"
 
 def loadServerConfig(configpath: str = SERVER_CONFIG_PATH) -> dict:
     if os.path.exists(configpath):
