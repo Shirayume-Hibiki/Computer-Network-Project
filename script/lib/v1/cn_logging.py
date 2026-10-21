@@ -1,11 +1,20 @@
+'''
+╔══════════════════════════════════════════════════════╗
+║  Creator:                  Shirayume_Hibiki          ║
+║  Creation date:            18/10/26                  ║
+║  Edit dates / contributor:                           ║
+╚══════════════════════════════════════════════════════╝
+'''
+
 import datetime
 import os
 import tomllib
 
 from UI import UI
 
-LOG_CONFIG_PATH = "./socket project/configs/log_config.toml"
-LOG_DIR = "./socket project/logs"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+LOG_CONFIG_PATH = os.path.join(PROJECT_ROOT, "configs", "log_config.toml")
+LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
 FILE_TIME_FORMAT = "%d-%m-%Y_%H-%M-%S"
 TIME_FORMAT = "%d/%m/%Y ~ %H:%M:%S"
 
@@ -26,11 +35,10 @@ class CNLogger:
         self.filepath: str = ""
 
     def initLogger(self) -> str:
-        if os.path.exists(self.configpath):
-            with open(self.configpath, "rb") as cfg:
-                config = tomllib.load(cfg)
-                self.logdir = config.get("log_dir", LOG_DIR)
-                self.timeformat = config.get("time_format", TIME_FORMAT)
+        config = loadLogConfig(self.configpath)
+        rawlogdir = config.get("log_dir", LOG_DIR)
+        self.logdir = rawlogdir if os.path.isabs(rawlogdir) else os.path.join(PROJECT_ROOT, rawlogdir)
+        self.timeformat = config.get("time_format", TIME_FORMAT)
 
         os.makedirs(self.logdir, exist_ok=True)
         inittime = datetime.datetime.now().strftime(self.filetimeformat)

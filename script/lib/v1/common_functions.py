@@ -1,3 +1,11 @@
+'''
+╔══════════════════════════════════════════════════════╗
+║  Creator:                  Shirayume_Hibiki          ║
+║  Creation date:            18/10/26                  ║
+║  Edit dates / contributor:                           ║
+╚══════════════════════════════════════════════════════╝
+'''
+
 import sys
 import socket
 import time
