@@ -1,21 +1,16 @@
-'''~~~~~~~~~~~~~~~
-Creator: Shirayume_Hibiki
-Date of creation: 18/10/2026
-Edit dates:
-~~~~~~~~~~~~~~~'''
 import sys
+import os
 import socket
 import time
-import os
 import tomllib
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import common_functions as commonf
 from UI import UI as ui
 from cn_logging import CNLogger as log
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-SERVER_CONFIG_PATH = "./main/configs/server_config.toml"
+SERVER_CONFIG_PATH = "./socket project/configs/server_config.toml"
 
 def loadServerConfig(configpath: str = SERVER_CONFIG_PATH) -> dict:
     if os.path.exists(configpath):
@@ -49,7 +44,7 @@ class ServerTCP:
         self.serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.serversocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-        self.log.logSystem(f"Server socket initiated.", action = "INITIATION", console = True)
+        self.log.logSystem(f"Server socket initiated. Protocol: [TCP].", action = "INITIATION", console = True)
 
     # Bind socket
     def bindSocket(self, port: int):
