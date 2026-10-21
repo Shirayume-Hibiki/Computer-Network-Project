@@ -10,7 +10,7 @@ import tomllib
 
 from UI import UI
 
-LOG_CONFIG_PATH = "./socket project/configs/log_config.toml"
+LOG_CONFIG_PATH = "./main/configs/log_config.toml"
 LOG_DIR = "./socket project/logs"
 FILE_TIME_FORMAT = "%d-%m-%Y_%H-%M-%S"
 TIME_FORMAT = "%d/%m/%Y ~ %H:%M:%S"
