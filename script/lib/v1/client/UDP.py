@@ -1,3 +1,11 @@
+'''
+╔══════════════════════════════════════════════════════╗
+║  Creator:                  Shirayume_Hibiki          ║
+║  Creation date:            21/10/26                  ║
+║  Edit dates / contributor:                           ║
+╚══════════════════════════════════════════════════════╝
+'''
+
 import sys
 import os
 import socket
@@ -9,7 +17,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from UI import UI as ui
 from cn_logging import CNLogger as log
 
-CLIENT_CONFIG_PATH = "./socket project/configs/client_config.toml"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+CLIENT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "configs", "client_config.toml")
 
 def loadClientConfig(configpath: str = CLIENT_CONFIG_PATH) -> dict:
     if os.path.exists(configpath):

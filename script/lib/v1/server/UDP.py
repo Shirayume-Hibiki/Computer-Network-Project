@@ -1,3 +1,11 @@
+'''
+╔══════════════════════════════════════════════════════╗
+║  Creator:                  Shirayume_Hibiki          ║
+║  Creation date:            21/10/26                  ║
+║  Edit dates / contributor:                           ║
+╚══════════════════════════════════════════════════════╝
+'''
+
 import sys
 import os
 import socket
@@ -10,7 +18,8 @@ import common_functions as commonf
 from UI import UI as ui
 from cn_logging import CNLogger as log
 
-SERVER_CONFIG_PATH = "./socket project/configs/server_config.toml"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+SERVER_CONFIG_PATH = os.path.join(PROJECT_ROOT, "configs", "server_config.toml")
 
 def loadServerConfig(configpath: str = SERVER_CONFIG_PATH) -> dict:
     if os.path.exists(configpath):
