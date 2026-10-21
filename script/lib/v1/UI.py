@@ -1,9 +1,3 @@
-'''~~~~~~~~~~~~~~~
-Creator: Shirayume_Hibiki
-Date of creation: 18/10/2026
-Edit dates:
-~~~~~~~~~~~~~~~'''
-
 import datetime
     
 SERVER_COLOR = '\033[94m' # Blue
@@ -13,6 +7,7 @@ WARN_COLOR   = '\033[93m' # Yellow
 ERROR_COLOR  = '\033[91m' # Red
 RESET = '\033[0m'
 BOLD = '\033[1m'
+# TODO: Set these params to ./configs/UI_config.toml
 
 class UI:
     # Method to get current time

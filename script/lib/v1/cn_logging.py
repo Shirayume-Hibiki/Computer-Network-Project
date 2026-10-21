@@ -1,16 +1,10 @@
-'''~~~~~~~~~~~~~~~
-Creator: Shirayume_Hibiki
-Date of creation: 18/10/2026
-Edit dates:
-~~~~~~~~~~~~~~~'''
-
 import datetime
 import os
 import tomllib
 
 from UI import UI
 
-LOG_CONFIG_PATH = "./main/configs/log_config.toml"
+LOG_CONFIG_PATH = "./socket project/configs/log_config.toml"
 LOG_DIR = "./socket project/logs"
 FILE_TIME_FORMAT = "%d-%m-%Y_%H-%M-%S"
 TIME_FORMAT = "%d/%m/%Y ~ %H:%M:%S"
@@ -69,6 +63,11 @@ class CNLogger:
         self.writeLog("SYSTEM", action, msg)
         if console:
             UI.systemMsg(msg, action)
+
+    def logWarn(self, msg: str, action: str = "WARN", console: bool = True):
+        self.writeLog("WARN", action, msg)
+        if console:
+            UI.warningMsg(msg, action)
 
     def logError(self, msg: str, action: str = "ERROR", console: bool = True):
         self.writeLog("ERROR", action, msg)
