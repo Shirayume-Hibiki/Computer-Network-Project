@@ -3,3 +3,5 @@ buffer_size = 1024
 max_retries = 3
 retry_delay = 1
 host = "127.0.0.1"
+discovery_port = 9999
+udp_port = 8888

@@ -3,12 +3,13 @@
 ║  Creator:                  Shirayume_Hibiki          ║
 ║  Creation date:            21/10/26                  ║
 ║  Edit dates / contributor:                           ║
+║  24/10/26 Shirayume_Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
-import sys
 import os
 import socket
+import sys
 import time
 import tomllib
 
@@ -29,19 +30,50 @@ def loadClientConfig(configpath: str = CLIENT_CONFIG_PATH) -> dict:
 
 CLIENT_CONFIG = loadClientConfig()
 DEFAULT_HOST: str = CLIENT_CONFIG.get("server_host", "127.0.0.1")
+DISCOVERY_PORT: int = CLIENT_CONFIG.get("discovery_port", 9999)
 BUFFER_SIZE: int = CLIENT_CONFIG.get("buffer_size", 1024)
 MAX_RETRIES: int = CLIENT_CONFIG.get("max_retries", 3)
 RETRY_DELAY: int = CLIENT_CONFIG.get("retry_delay", 1)
 TIMEOUT: int = CLIENT_CONFIG.get("timeout", 5)
 
 class ClientTCP:
-    def __init__(self, host: str = DEFAULT_HOST, port: int = 0):
+    def __init__(self, host: str = DEFAULT_HOST, port: int = 0, discoveryport: int = DISCOVERY_PORT):
         self.host = host
         self.port = port
+        self.discoveryport = discoveryport
         self.clientsocket: socket.socket | None = None
         self.log = log(instancepfx="client_tcp")
 
-    # Init socket
+    # Discover TCP server main port via UDP port 9999
+    def discoverServer(self, pingmsg: str = "DISCOVER_TCP", maxretries: int = MAX_RETRIES) -> tuple[str, int] | None:
+        discoveryaddr = (self.host, self.discoveryport)
+        for attempt in range(1, maxretries + 1):
+            self.log.logClient(f"Pinging TCP discovery server at {discoveryaddr} ({attempt}/{maxretries})...", action = "DISCOVERY", console = True)
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as discsockets:
+                    discsockets.settimeout(TIMEOUT)
+                    discsockets.sendto(pingmsg.encode("utf-8"), discoveryaddr)
+                    data, _ = discsockets.recvfrom(BUFFER_SIZE)
+                    if data:
+                        decoded = data.decode("utf-8", errors="ignore").strip().rstrip(".")
+                        # Format expected: "Server's TCP socket is listening on {host}:{port}"
+                        target = decoded.split()[-1]
+                        if ":" in target:
+                            hostpart, portpart = target.rsplit(":", 1)
+                            if portpart.isdigit():
+                                self.host = hostpart
+                                self.port = int(portpart)
+                                self.log.logClient(f"Discovered TCP server address: {self.host}:{self.port}.", action = "DISCOVERY", console = True)
+                                return self.host, self.port
+            except socket.error as err:
+                self.log.logError(f"Discovery attempt {attempt} error: {err}.", action = "DISCOVERY")
+                if attempt < maxretries:
+                    time.sleep(RETRY_DELAY)
+
+        self.log.logError("Failed to discover TCP server after maximum retries.", action = "DISCOVERY")
+        return None
+
+    # Init TCP client socket
     def setupSocket(self):
         if not self.log.filepath:
             self.log.initLogger()
@@ -64,6 +96,10 @@ class ClientTCP:
             self.host = host
         if port is not None:
             self.port = port
+
+        if self.port == 0:
+            self.log.logError("Target port is 0. Call discoverServer() or set port first.", action = "CONNECT")
+            return False
 
         for attempt in range(1, maxretries + 1):
             try:
