@@ -3,12 +3,13 @@
 ║  Creator:                  Shirayume_Hibiki          ║
 ║  Creation date:            21/10/26                  ║
 ║  Edit dates / contributor:                           ║
+║  24/10/26 Shirayume_Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
-import sys
 import os
 import socket
+import sys
 import time
 import tomllib
 
@@ -29,21 +30,20 @@ def loadClientConfig(configpath: str = CLIENT_CONFIG_PATH) -> dict:
 
 CLIENT_CONFIG = loadClientConfig()
 DEFAULT_HOST: str = CLIENT_CONFIG.get("server_host", "127.0.0.1")
-DISCOVERY_PORT: int = CLIENT_CONFIG.get("discovery_port", 9999)
+UDP_PORT: int = CLIENT_CONFIG.get("udp_port", 8888)
 BUFFER_SIZE: int = CLIENT_CONFIG.get("buffer_size", 1024)
 MAX_RETRIES: int = CLIENT_CONFIG.get("max_retries", 3)
 RETRY_DELAY: int = CLIENT_CONFIG.get("retry_delay", 1)
 TIMEOUT: int = CLIENT_CONFIG.get("timeout", 5)
 
 class ClientUDP:
-    def __init__(self, host: str = DEFAULT_HOST, port: int = 0, discoveryport: int = DISCOVERY_PORT):
+    def __init__(self, host: str = DEFAULT_HOST, port: int = UDP_PORT):
         self.host = host
         self.port = port
-        self.discoveryport = discoveryport
         self.clientsocket: socket.socket | None = None
         self.log = log(instancepfx="client_udp")
 
-    # Init UDP socket
+    # Init UDP client socket
     def setupSocket(self):
         if not self.log.filepath:
             self.log.initLogger()
@@ -56,44 +56,12 @@ class ClientUDP:
         self.clientsocket.settimeout(TIMEOUT)
         self.log.logClient("Client socket initiated. Protocol: [UDP].", action = "INITIATION", console = True)
 
-    # Discover server main UDP port via port 9999
-    def discoverServer(self, pingmsg: str = "DISCOVER_UDP", maxretries: int = MAX_RETRIES) -> tuple[str, int] | None:
-        if self.clientsocket is None:
-            self.log.logError("Client socket is not initialized. Call setupSocket() first.", action = "DISCOVERY")
-            return None
-
-        discoveryaddr = (self.host, self.discoveryport)
-        for attempt in range(1, maxretries + 1):
-            self.log.logClient(f"Pinging discovery server at {discoveryaddr} ({attempt}/{maxretries})...", action = "DISCOVERY", console = True)
-            if self.sendData(pingmsg, addr = discoveryaddr, maxretries = 1):
-                data, serveraddr = self.receiveData(maxretries = 1)
-                if data:
-                    decoded = data.decode("utf-8", errors="ignore").strip().rstrip(".")
-                    # Extract host:port from "Server's UDP socket is listening on 127.0.0.1:xxxxx"
-                    target = decoded.split()[-1]
-                    if ":" in target:
-                        hostpart, portpart = target.rsplit(":", 1)
-                        if portpart.isdigit():
-                            self.host = hostpart
-                            self.port = int(portpart)
-                            self.log.logClient(f"Discovered server UDP main address: {self.host}:{self.port}.", action = "DISCOVERY", console = True)
-                            return self.host, self.port
-            if attempt < maxretries:
-                time.sleep(RETRY_DELAY)
-
-        self.log.logError("Failed to discover UDP server after maximum retries.", action = "DISCOVERY")
-        return None
-
     def sendData(self, data: bytes | str, addr: tuple[str, int] | None = None, maxretries: int = MAX_RETRIES) -> bool:
         if self.clientsocket is None:
             self.log.logError("Client socket is not initialized. Call setupSocket() first.", action = "SEND")
             return False
 
         targetaddr = addr or (self.host, self.port)
-        if targetaddr[1] == 0:
-            self.log.logError("Target server port is 0. Call discoverServer() or set port first.", action = "SEND")
-            return False
-
         if isinstance(data, str):
             data = data.encode("utf-8")
 
@@ -103,7 +71,7 @@ class ClientUDP:
                 self.log.logClient(f"Sent {len(data)} bytes to {targetaddr}.", action = "SEND", console = False)
                 return True
             except socket.error as err:
-                self.log.logError(f"UDP send error ({attempt}/{maxretries}): {err}.", action = "SEND")
+                self.log.logError(f"UDP send error ({attempt}/{maxretries}) to {targetaddr}: {err}.", action = "SEND")
                 if attempt < maxretries:
                     time.sleep(RETRY_DELAY)
         return False

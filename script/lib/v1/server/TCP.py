@@ -3,20 +3,21 @@
 ║  Creator:                  Shirayume_Hibiki          ║
 ║  Creation date:            18/10/26                  ║
 ║  Edit dates / contributor:                           ║
+║  24/10/26 Shirayume_Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
-import sys
 import os
 import socket
+import sys
 import time
 import tomllib
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import common_functions as commonf
 from UI import UI as ui
 from cn_logging import CNLogger as log
+import common_functions as commonf
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 SERVER_CONFIG_PATH = os.path.join(PROJECT_ROOT, "configs", "server_config.toml")
@@ -33,52 +34,109 @@ DEFAULT_HOST: str = SERVER_CONFIG.get("host", "127.0.0.1")
 BUFFER_SIZE: int = SERVER_CONFIG.get("buffer_size", 1024)
 MAX_RETRIES: int = SERVER_CONFIG.get("max_retries", 3)
 RETRY_DELAY: int = SERVER_CONFIG.get("retry_delay", 1)
+DISCOVERY_PORT: int = SERVER_CONFIG.get("discovery_port", 9999)
 
 class ServerTCP:
-    def __init__(self, host: str = DEFAULT_HOST, port: int = 0, backlog: int = 5):
+    def __init__(self, host: str = DEFAULT_HOST, port: int = 0, discoveryport: int = DISCOVERY_PORT, backlog: int = 5):
         self.host = host
         self.port = port
+        self.discoveryport = discoveryport
         self.backlog = backlog
         self.serversocket: socket.socket | None = None
+        self.discovery: socket.socket | None = None
         self.log = log(instancepfx="server_tcp")
 
-    # Init socket
-    def setupSocket(self):
+    # Init sockets (main TCP socket + UDP discovery socket)
+    def setupSockets(self):
         if not self.log.filepath:
             self.log.initLogger()
 
-        if self.serversocket is not None: 
+        if self.serversocket is not None or self.discovery is not None:
+            self.log.logWarn(f"Existing socket running. Closing to reinitiate.")
             self.closeSocket()
 
         self.serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.serversocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-        self.log.logSystem(f"Server socket initiated. Protocol: [TCP].", action = "INITIATION", console = True)
+        self.discovery = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.discovery.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-    # Bind socket
-    def bindSocket(self, port: int):
-        if self.serversocket is None:
-            self.log.logError("Server socket is not initialized. Call setupSocket() first.", action = "BIND")
+        self.log.logSystem("Server socket initiated. Protocol: [TCP].", action = "INITIATION", console = True)
+        self.log.logSystem("Discovery socket initiated. Protocol: [UDP].", action = "INITIATION", console = True)
+
+    # Bind main TCP socket and UDP discovery socket
+    def bindSockets(self, port: int | None = None, maxretries: int = MAX_RETRIES):
+        if self.serversocket is None or self.discovery is None:
+            self.log.logError("Server sockets are not initialized. Call setupSockets() first.", action = "BIND")
             return None
-        
-        try:
-            self.serversocket.bind((self.host, port))
-        except OSError as err:
-            self.log.logError(f"Bind error on {self.host}:{self.port} ({err}), switching port...")
-            fallbackport = commonf.portFinder()
-            self.serversocket.bind((self.host, fallbackport))
-        
-        # Update self.port
-        self.port = self.serversocket.getsockname()[1]
-        self.serversocket.listen(self.backlog)
-        self.log.logServer(f"Listening on {self.host}:{self.port}.", action = "LISTEN", console = False)
+
+        self.port = port if port is not None else commonf.portFinder()
+
+        # 1. Bind main TCP socket
+        bound = False
+        for attempt in range(1, maxretries + 1):
+            try:
+                self.serversocket.bind((self.host, self.port))
+                self.port = self.serversocket.getsockname()[1]
+                self.serversocket.listen(self.backlog)
+                self.log.logServer(f"Listening on {self.host}:{self.port}.", action = "LISTEN", console = False)
+                bound = True
+                break
+            except OSError as err:
+                self.log.logError(f"Bind error ({attempt}/{maxretries}) on {self.host}:{self.port} ({err}), switching port...", action = "BIND")
+                self.port = commonf.portFinder()
+                if attempt < maxretries:
+                    time.sleep(RETRY_DELAY)
+
+        if not bound:
+            self.log.logError("Failed to bind main TCP socket after maximum retries. Aborting...", action = "BIND")
+            self.closeSocket()
+            return None
+
+        # 2. Bind discovery UDP socket
+        discoverybound = False
+        for attempt in range(1, maxretries + 1):
+            try:
+                self.discovery.bind((self.host, self.discoveryport))
+                self.log.logServer(f"Discovery port bound to {self.host}:{self.discoveryport}.", action = "BIND", console = True)
+                discoverybound = True
+                break
+            except OSError as err:
+                self.log.logError(f"Discovery port binding error ({attempt}/{maxretries}) on {self.host}:{self.discoveryport} ({err}). Reconnecting...", action = "BIND")
+                if attempt < maxretries:
+                    time.sleep(RETRY_DELAY)
+
+        if not discoverybound:
+            self.log.logError("Failed to bind discovery port after maximum retries. Aborting...", action = "BIND")
+            self.closeSocket()
+            return None
+
         return self.serversocket
 
-    def acceptConnection(self, maxretries = MAX_RETRIES):
+    # Announce TCP port to discovering clients via UDP port 9999
+    def announcePort(self) -> tuple[str, int] | None:
+        if self.discovery is None:
+            self.log.logError("Discovery socket not initiated. Use setupSockets() first.", action = "ANNOUNCE")
+            return None
+
+        try:
+            data, clientaddr = self.discovery.recvfrom(BUFFER_SIZE)
+            if clientaddr is not None:
+                msg = f"Server's TCP socket is listening on {self.host}:{self.port}."
+                self.discovery.sendto(msg.encode("utf-8"), clientaddr)
+                self.log.logServer(f"Announced TCP port ({self.port}) to {clientaddr}.", action = "ANNOUNCE", console = True)
+                return clientaddr
+        except (socket.timeout, TimeoutError):
+            return None
+        except socket.error as err:
+            self.log.logError(f"Discovery announce error: {err}.", action = "ANNOUNCE")
+        return None
+
+    def acceptConnection(self, maxretries: int = MAX_RETRIES):
         if self.serversocket is None:
-            self.log.logError("Server socket is not initialized. Call setupSocket() & bindSocket() first.")
+            self.log.logError("Server socket is not initialized. Call setupSockets() & bindSockets() first.", action = "ACCEPT")
             return None, None
-        
+
         for attempt in range(1, maxretries + 1):
             try:
                 conn, addr = self.serversocket.accept()
@@ -89,12 +147,12 @@ class ServerTCP:
                 if attempt < maxretries:
                     time.sleep(RETRY_DELAY)
         return None, None
-    
+
     def switchPort(self):
         newport = commonf.portFinder()
         self.log.logSystem(f"Switching to a new available port... Target: {newport}.", action = "SWITCH_PORT", console = True)
-        self.setupSocket()
-        self.bindSocket(newport)
+        self.setupSockets()
+        self.bindSockets(newport)
 
     def sendData(self, conn: socket.socket, data: bytes | str, maxretries: int = MAX_RETRIES) -> bool:
         if isinstance(data, str):
@@ -132,16 +190,19 @@ class ServerTCP:
                     time.sleep(RETRY_DELAY)
         return b""
 
-    def closeSocket(self, maxretries = MAX_RETRIES):
-        if self.serversocket is None:
+    def closeSocket(self, maxretries: int = MAX_RETRIES):
+        if self.serversocket is None and self.discovery is None:
             return
-        
+
         for attempt in range(1, maxretries + 1):
             try:
                 if self.serversocket is not None:
                     self.serversocket.close()
                     self.serversocket = None
-                self.log.logServer("Server socket closed successfully.", action = "CLOSE", console = True)
+                if self.discovery is not None:
+                    self.discovery.close()
+                    self.discovery = None
+                self.log.logServer("Server TCP and discovery sockets closed successfully.", action = "CLOSE", console = True)
                 return
             except socket.error as err:
                 self.log.logError(f"Socket close error ({attempt}/{maxretries}): {err}.", action = "CLOSE")
