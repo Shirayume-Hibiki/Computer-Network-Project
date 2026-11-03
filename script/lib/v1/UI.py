@@ -3,11 +3,12 @@
 ║  Creator:                  Shirayume_Hibiki          ║
 ║  Creation date:            18/10/26                  ║
 ║  Edit dates / contributor:                           ║
+║  03/11/26 diamboy                                    ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
 import datetime
-    
+
 SERVER_COLOR = '\033[94m' # Blue
 CLIENT_COLOR = '\033[92m' # Green
 SYSTEM_COLOR = '\033[90m' # Gray
