@@ -4,6 +4,7 @@
 ║  Creation date:            21/10/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  24/10/26 Shirayume_Hibiki                           ║
+║  30/10/26 Koro_Gold                                  ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -53,6 +54,7 @@ class ClientUDP:
             self.closeSocket()
 
         self.clientsocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.clientsocket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.clientsocket.settimeout(TIMEOUT)
         self.log.logClient("Client socket initiated. Protocol: [UDP].", action = "INITIATION", console = True)
 

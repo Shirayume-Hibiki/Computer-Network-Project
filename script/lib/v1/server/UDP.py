@@ -4,6 +4,7 @@
 ║  Creation date:            21/10/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  24/10/26 Shirayume_Hibiki                           ║
+║  30/10/26 Koro_Gold                                  ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -53,6 +54,7 @@ class ServerUDP:
 
         self.serversocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.serversocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.serversocket.settimeout(0.5)
         self.log.logServer("Server socket initiated. Protocol: [UDP].", action = "INITIATION", console = True)
 
     # Bind UDP server socket to fixed port
@@ -112,6 +114,8 @@ class ServerUDP:
                 data, addr = self.serversocket.recvfrom(buffersize)
                 self.log.logServer(f"Received {len(data)} bytes from {addr}.", action = "RECEIVE", console = False)
                 return data, addr
+            except socket.timeout:
+                return b"", None
             except ConnectionResetError as err:
                 # ICMP Port Unreachable on Windows UDP
                 self.log.logError(f"Peer unreachable while receiving: {err}.", action = "RECEIVE")
