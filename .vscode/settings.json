@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/script/lib/v1",
+        "./script/lib/v1"
+    ]
+}

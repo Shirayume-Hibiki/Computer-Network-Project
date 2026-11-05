@@ -4,6 +4,7 @@
 ║  Creation date:            21/10/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  24/10/26 Shirayume_Hibiki                           ║
+║  03/11/26 Shirayume_Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -44,15 +45,16 @@ class ClientTCP:
         self.clientsocket: socket.socket | None = None
         self.log = log(instancepfx="client_tcp")
 
-    # Discover TCP server main port via UDP port 9999
+    # Discover TCP server main port via UDP port 9999 broadcast
     def discoverServer(self, pingmsg: str = "DISCOVER_TCP", maxretries: int = MAX_RETRIES) -> tuple[str, int] | None:
-        discoveryaddr = (self.host, self.discoveryport)
         for attempt in range(1, maxretries + 1):
-            self.log.logClient(f"Pinging TCP discovery server at {discoveryaddr} ({attempt}/{maxretries})...", action = "DISCOVERY", console = True)
+            self.log.logClient(f"Listening for TCP discovery broadcast on port {self.discoveryport} ({attempt}/{maxretries})...", action = "DISCOVERY", console = True)
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as discsockets:
+                    discsockets.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    discsockets.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    discsockets.bind(("", self.discoveryport))
                     discsockets.settimeout(TIMEOUT)
-                    discsockets.sendto(pingmsg.encode("utf-8"), discoveryaddr)
                     data, _ = discsockets.recvfrom(BUFFER_SIZE)
                     if data:
                         decoded = data.decode("utf-8", errors="ignore").strip().rstrip(".")

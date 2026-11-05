@@ -4,6 +4,7 @@
 ║  Creation date:            21/10/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  24/10/26 Shirayume_Hibiki                           ║
+║  04/11/26 Shirayume_Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -34,11 +35,13 @@ UDP_PORT: int = SERVER_CONFIG.get("udp_port", 8888)
 BUFFER_SIZE: int = SERVER_CONFIG.get("buffer_size", 1024)
 MAX_RETRIES: int = SERVER_CONFIG.get("max_retries", 3)
 RETRY_DELAY: int = SERVER_CONFIG.get("retry_delay", 1)
+TIMEOUT_PERIOD: int = SERVER_CONFIG.get("timeout_period", 5)
 
 class ServerUDP:
-    def __init__(self, host: str = DEFAULT_HOST, port: int = UDP_PORT):
+    def __init__(self, host: str = DEFAULT_HOST, port: int = UDP_PORT, timeout_period: int = TIMEOUT_PERIOD):
         self.host = host
         self.port = port
+        self.timeout_period = timeout_period
         self.serversocket: socket.socket | None = None
         self.log = log(instancepfx="server_udp")
 
@@ -53,6 +56,7 @@ class ServerUDP:
 
         self.serversocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.serversocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.serversocket.settimeout(self.timeout_period)
         self.log.logServer("Server socket initiated. Protocol: [UDP].", action = "INITIATION", console = True)
 
     # Bind UDP server socket to fixed port
@@ -96,6 +100,10 @@ class ServerUDP:
                 self.serversocket.sendto(data, addr)
                 self.log.logServer(f"Sent {len(data)} bytes to {addr}.", action = "SEND", console = False)
                 return True
+            except (socket.timeout, TimeoutError) as err:
+                self.log.logWarn(f"UDP send timed out ({attempt}/{maxretries}) to {addr}: {err}.", action = "TIMEOUT")
+                if attempt < maxretries:
+                    time.sleep(RETRY_DELAY)
             except socket.error as err:
                 self.log.logError(f"UDP send error ({attempt}/{maxretries}) to {addr}: {err}.", action = "SEND")
                 if attempt < maxretries:
@@ -112,6 +120,10 @@ class ServerUDP:
                 data, addr = self.serversocket.recvfrom(buffersize)
                 self.log.logServer(f"Received {len(data)} bytes from {addr}.", action = "RECEIVE", console = False)
                 return data, addr
+            except (socket.timeout, TimeoutError) as err:
+                self.log.logWarn(f"UDP receive timed out ({attempt}/{maxretries}) after {self.timeout_period}s: {err}.", action = "TIMEOUT")
+                if attempt < maxretries:
+                    time.sleep(RETRY_DELAY)
             except ConnectionResetError as err:
                 # ICMP Port Unreachable on Windows UDP
                 self.log.logError(f"Peer unreachable while receiving: {err}.", action = "RECEIVE")
