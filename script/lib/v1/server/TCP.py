@@ -4,6 +4,7 @@
 ║  Creation date:            18/10/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  24/10/26 Shirayume_Hibiki                           ║
+║  03/11/26 Shirayume_Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -34,7 +35,8 @@ DEFAULT_HOST: str = SERVER_CONFIG.get("host", "127.0.0.1")
 BUFFER_SIZE: int = SERVER_CONFIG.get("buffer_size", 1024)
 MAX_RETRIES: int = SERVER_CONFIG.get("max_retries", 3)
 RETRY_DELAY: int = SERVER_CONFIG.get("retry_delay", 1)
-DISCOVERY_PORT: int = SERVER_CONFIG.get("discovery_port", 9999)
+LBA_ADDRESS: str = "255.255.255.255"
+DISCOVERY_PORT: int = 9999
 
 class ServerTCP:
     def __init__(self, host: str = DEFAULT_HOST, port: int = 0, discoveryport: int = DISCOVERY_PORT, backlog: int = 5):
@@ -59,12 +61,12 @@ class ServerTCP:
         self.serversocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
         self.discovery = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.discovery.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.discovery.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
         self.log.logSystem("Server socket initiated. Protocol: [TCP].", action = "INITIATION", console = True)
         self.log.logSystem("Discovery socket initiated. Protocol: [UDP].", action = "INITIATION", console = True)
 
-    # Bind main TCP socket and UDP discovery socket
+    # Bind main TCP socket
     def bindSockets(self, port: int | None = None, maxretries: int = MAX_RETRIES):
         if self.serversocket is None or self.discovery is None:
             self.log.logError("Server sockets are not initialized. Call setupSockets() first.", action = "BIND")
@@ -93,44 +95,28 @@ class ServerTCP:
             self.closeSocket()
             return None
 
-        # 2. Bind discovery UDP socket
-        discoverybound = False
-        for attempt in range(1, maxretries + 1):
-            try:
-                self.discovery.bind((self.host, self.discoveryport))
-                self.log.logServer(f"Discovery port bound to {self.host}:{self.discoveryport}.", action = "BIND", console = True)
-                discoverybound = True
-                break
-            except OSError as err:
-                self.log.logError(f"Discovery port binding error ({attempt}/{maxretries}) on {self.host}:{self.discoveryport} ({err}). Reconnecting...", action = "BIND")
-                if attempt < maxretries:
-                    time.sleep(RETRY_DELAY)
-
-        if not discoverybound:
-            self.log.logError("Failed to bind discovery port after maximum retries. Aborting...", action = "BIND")
-            self.closeSocket()
-            return None
-
         return self.serversocket
 
-    # Announce TCP port to discovering clients via UDP port 9999
-    def announcePort(self) -> tuple[str, int] | None:
+    # Announce TCP port via UDP broadcast on port 9999 using Limited Broadcast Address (255.255.255.255)
+    def announcePort(self, interval: float = 1.0) -> tuple[str, int] | None:
         if self.discovery is None:
             self.log.logError("Discovery socket not initiated. Use setupSockets() first.", action = "ANNOUNCE")
             return None
 
+        msg = f"Server's TCP socket is listening on {self.host}:{self.port}."
         try:
-            data, clientaddr = self.discovery.recvfrom(BUFFER_SIZE)
-            if clientaddr is not None:
-                msg = f"Server's TCP socket is listening on {self.host}:{self.port}."
-                self.discovery.sendto(msg.encode("utf-8"), clientaddr)
-                self.log.logServer(f"Announced TCP port ({self.port}) to {clientaddr}.", action = "ANNOUNCE", console = True)
-                return clientaddr
-        except (socket.timeout, TimeoutError):
-            return None
+            self.discovery.sendto(msg.encode("utf-8"), (LBA_ADDRESS, DISCOVERY_PORT))
+            try:
+                self.discovery.sendto(msg.encode("utf-8"), ("127.0.0.1", DISCOVERY_PORT))
+            except socket.error:
+                pass
+            self.log.logServer(f"Broadcasted TCP port ({self.port}) to {LBA_ADDRESS}:{DISCOVERY_PORT}.", action = "ANNOUNCE", console = False)
+            if interval > 0:
+                time.sleep(interval)
+            return (LBA_ADDRESS, DISCOVERY_PORT)
         except socket.error as err:
-            self.log.logError(f"Discovery announce error: {err}.", action = "ANNOUNCE")
-        return None
+            self.log.logError(f"Broadcast announce error: {err}.", action = "ANNOUNCE")
+            return None
 
     def acceptConnection(self, maxretries: int = MAX_RETRIES):
         if self.serversocket is None:
