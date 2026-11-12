@@ -1,0 +1,9 @@
+[lan_chat]
+discovery_port = 9999
+beacon_interval = 3
+peer_timeout = 10
+buffer_size = 65536
+file_chunk_size = 65536
+downloads_dir = "downloads"
+default_status = "online"
+broadcast_address = "255.255.255.255"
