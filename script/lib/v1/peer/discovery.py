@@ -3,12 +3,14 @@
 ║  Creator:                  Shirayume-Hibiki          ║
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
+║  13/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
 import socket
 import threading
 import time
+import uuid
 from typing import Callable
 
 from protocol.udp_protocol import (
@@ -31,6 +33,7 @@ class UdpBroadcaster:
         interval: float = 3.0,
         broadcast_addr: str = "255.255.255.255",
         status: str = "online",
+        node_id: str | None = None,
     ):
         self.name = name
         self.tcp_port = tcp_port
@@ -38,6 +41,7 @@ class UdpBroadcaster:
         self.interval = interval
         self.broadcast_addr = broadcast_addr
         self.status = status
+        self.node_id = node_id if node_id else str(uuid.uuid4())
         self.running = False
         self._thread: threading.Thread | None = None
         self._wake_event = threading.Event()
@@ -88,16 +92,16 @@ class UdpBroadcaster:
                 pass
 
     def sendStatusUpdate(self, status: str) -> None:
-        payload = createStatusUpdate(self.name, self.tcp_port, status)
+        payload = createStatusUpdate(self.name, self.tcp_port, status, node_id=self.node_id)
         self._sendDatagram(payload)
 
     def sendGoodbye(self) -> None:
-        payload = createGoodbye(self.name, self.tcp_port)
+        payload = createGoodbye(self.name, self.tcp_port, node_id=self.node_id)
         self._sendDatagram(payload)
 
     def _broadcastLoop(self) -> None:
         while self.running:
-            beacon = createBeacon(self.name, self.tcp_port, self.status)
+            beacon = createBeacon(self.name, self.tcp_port, self.status, node_id=self.node_id)
             self._sendDatagram(beacon)
             self._wake_event.wait(timeout=self.interval)
             self._wake_event.clear()
@@ -109,6 +113,7 @@ class UdpListener:
         my_name: str,
         my_tcp_port: int,
         discovery_port: int = 9999,
+        my_node_id: str = "",
         on_peer_join: Callable[[Peer], None] | None = None,
         on_peer_leave: Callable[[Peer], None] | None = None,
         on_peer_status_change: Callable[[Peer, str], None] | None = None,
@@ -118,6 +123,7 @@ class UdpListener:
         self.my_name = my_name
         self.my_tcp_port = my_tcp_port
         self.discovery_port = discovery_port
+        self.my_node_id = my_node_id
         self.on_peer_join = on_peer_join
         self.on_peer_leave = on_peer_leave
         self.on_peer_status_change = on_peer_status_change
@@ -171,9 +177,15 @@ class UdpListener:
                 msg_type = payload["type"]
                 status = payload.get("status", "online")
 
-                # Discard packets from ourselves
-                if peer_name.lower() == self.my_name.lower() or peer_tcp_port == self.my_tcp_port:
+                # Discard packets from ourselves using node_id
+                sender_node_id = payload.get("node_id")
+                if sender_node_id and sender_node_id == self.my_node_id:
                     continue
+                # Fallback for packets without node_id: only discard if BOTH name and port match AND IP is local
+                if not sender_node_id:
+                    if peer_name.lower() == self.my_name.lower() and peer_tcp_port == self.my_tcp_port:
+                        if sender_ip.startswith("127.") or sender_ip == socket.gethostbyname(socket.gethostname()):
+                            continue
 
                 if msg_type == MSG_GOODBYE:
                     removed = self.peer_table.removePeer(sender_ip, peer_tcp_port)

@@ -3,6 +3,7 @@
 ║  Creator:                  Shirayume-Hibiki          ║
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
+║  13/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -16,6 +17,9 @@ HEADER_FORMAT: str = "!2sHI"
 HEADER_SIZE: int = struct.calcsize(HEADER_FORMAT)  # 8 bytes
 
 # Message Types
+TYPE_HANDSHAKE: str = "HANDSHAKE"
+TYPE_HANDSHAKE_ACK: str = "HANDSHAKE_ACK"
+TYPE_HANDSHAKE_REJECT: str = "HANDSHAKE_REJECT"
 TYPE_CHAT: str = "CHAT"
 TYPE_FILE_PROPOSE: str = "FILE_PROPOSE"
 TYPE_FILE_ACCEPT: str = "FILE_ACCEPT"

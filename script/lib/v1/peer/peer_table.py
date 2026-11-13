@@ -3,6 +3,7 @@
 ║  Creator:                  Shirayume-Hibiki          ║
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
+║  13/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -41,10 +42,14 @@ class PeerTable:
             if name_key in self._peers:
                 peer = self._peers[name_key]
                 old_status = peer.status
-                # Update to non-loopback IP if previous was loopback
-                if peer.ip.startswith("127.") and not ip.startswith("127."):
+                peer.name = name
+                # Update IP: prefer non-loopback IP, but update if previous was loopback or current is non-loopback
+                if not ip.startswith("127."):
                     peer.ip = ip
-                    peer.port = port
+                elif peer.ip.startswith("127."):
+                    peer.ip = ip
+                # Always update port to handle dynamic port re-allocations / restarts
+                peer.port = port
                 peer.status = status
                 peer.last_seen = now
                 status_changed = (old_status != status)
@@ -99,4 +104,7 @@ class PeerTable:
 
     def getPeerByKey(self, ip: str, port: int) -> Peer | None:
         with self._lock:
-            return self._peers.get(f"{ip}:{port}")
+            for peer in self._peers.values():
+                if (peer.ip == ip or peer.ip.startswith("127.") or ip.startswith("127.")) and peer.port == port:
+                    return peer
+            return None

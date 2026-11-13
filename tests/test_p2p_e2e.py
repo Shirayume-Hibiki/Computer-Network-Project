@@ -3,6 +3,7 @@
 ║  Creator:                  Shirayume-Hibiki          ║
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
+║  13/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -133,6 +134,81 @@ class TestLanChatP2P(unittest.TestCase):
         self.assertIsNone(self.alice.active_sock)
 
         print("[E2E] Full P2P workflow test PASSED successfully!")
+
+    def test_busy_peer_rejection_no_false_positive(self):
+        """Verify that when Bob is chatting with Alice, Zack is rejected and gets False without false-connected state."""
+        print("\n[E2E] Testing busy peer rejection...")
+        self.alice.start()
+        self.bob.start()
+        time.sleep(1.2)
+
+        zack = PeerNode(name="Zack", tcp_port=7003, discovery_port=9999, downloads_dir=self.test_dir)
+        zack.start()
+        time.sleep(1.2)
+
+        # Alice connects to Bob
+        ok_alice = self.alice.connectToPeer("Bob")
+        self.assertTrue(ok_alice, "Alice should connect to Bob")
+        time.sleep(0.5)
+
+        # Zack attempts to connect to busy Bob
+        ok_zack = zack.connectToPeer("Bob")
+        self.assertFalse(ok_zack, "Zack should be rejected by busy Bob")
+        self.assertIsNone(zack.active_sock, "Zack active_sock must be None after rejection")
+        self.assertIsNone(zack.active_peer_name, "Zack active_peer_name must be None")
+
+        zack.stop()
+        print("[E2E] Busy peer rejection test PASSED!")
+
+    def test_multi_peer_identity_attribution_on_same_host(self):
+        """Verify that Zack connecting to Bob is attributed to Zack, never to Alice (first alphabetically)."""
+        print("\n[E2E] Testing multi-peer identity attribution...")
+        self.bob.start()
+
+        zack = PeerNode(name="Zack", tcp_port=7003, discovery_port=9999, downloads_dir=self.test_dir)
+        zack.start()
+
+        # Add Alice to Bob's peer table so Alice is alphabetically first at same IP (127.0.0.1)
+        self.bob.peer_table.addOrUpdatePeer("Alice", "127.0.0.1", 7001, "online")
+        self.bob.peer_table.addOrUpdatePeer("Zack", "127.0.0.1", 7003, "online")
+        zack.peer_table.addOrUpdatePeer("Bob", "127.0.0.1", 7002, "online")
+
+        # Verify Bob's table lists Alice first
+        bob_peers = [p.name for p in self.bob.peer_table.getActivePeers()]
+        self.assertEqual(bob_peers[0], "Alice", "Alice must be first alphabetically in Bob's table")
+        self.assertIn("Zack", bob_peers)
+
+        # Zack connects to Bob from 127.0.0.1
+        ok = zack.connectToPeer("Bob")
+        self.assertTrue(ok, "Zack should connect to Bob")
+        time.sleep(0.5)
+
+        # Bob MUST attribute connection to Zack, NOT Alice!
+        self.assertEqual(self.bob.active_peer_name, "Zack", "Bob must attribute incoming connection to Zack")
+        self.assertEqual(zack.active_peer_name, "Bob", "Zack active peer must be Bob")
+
+        zack.leaveChat()
+        zack.stop()
+        print("[E2E] Identity attribution test PASSED!")
+
+    def test_peer_table_port_update_on_restart(self):
+        """Verify that PeerTable properly updates port when a peer restarts on a new dynamic port."""
+        print("\n[E2E] Testing peer table port update on restart...")
+        from peer.peer_table import PeerTable
+        table = PeerTable(timeout=10.0)
+
+        # Initial beacon: Bob on 5001
+        table.addOrUpdatePeer(name="Bob", ip="192.168.1.50", port=5001, status="online")
+        peer = table.getPeerByName("Bob")
+        self.assertIsNotNone(peer)
+        self.assertEqual(peer.port, 5001)
+
+        # Bob restarts on dynamic port 5099 within timeout window
+        table.addOrUpdatePeer(name="Bob", ip="192.168.1.50", port=5099, status="online")
+        peer = table.getPeerByName("Bob")
+        self.assertEqual(peer.port, 5099, "Peer port must update to 5099 upon restart")
+
+        print("[E2E] Peer table port update test PASSED!")
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,12 +3,14 @@
 ║  Creator:                  Shirayume-Hibiki          ║
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
+║  13/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
 import os
 import socket
 import threading
+import uuid
 from typing import Callable
 
 from file_transfer.file_manager import (
@@ -25,6 +27,9 @@ from protocol.tcp_protocol import (
     TYPE_FILE_COMPLETE,
     TYPE_FILE_PROPOSE,
     TYPE_FILE_REJECT,
+    TYPE_HANDSHAKE,
+    TYPE_HANDSHAKE_ACK,
+    TYPE_HANDSHAKE_REJECT,
     TYPE_LEAVE,
     recvFrame,
     sendFrame,
@@ -51,6 +56,7 @@ class PeerNode:
         self.downloads_dir = downloads_dir
         self.broadcast_addr = broadcast_addr
         self.status = status
+        self.node_id = str(uuid.uuid4())
 
         self.on_message = on_message
         self.on_file_progress = on_file_progress
@@ -65,12 +71,14 @@ class PeerNode:
             discovery_port=self.discovery_port,
             broadcast_addr=self.broadcast_addr,
             status=self.status,
+            node_id=self.node_id,
         )
         self.listener = UdpListener(
             peer_table=self.peer_table,
             my_name=self.name,
             my_tcp_port=self.tcp_port,
             discovery_port=self.discovery_port,
+            my_node_id=self.node_id,
             on_peer_join=self._handlePeerJoin,
             on_peer_leave=self._handlePeerLeave,
             on_peer_status_change=self._handlePeerStatusChange,
@@ -167,25 +175,51 @@ class PeerNode:
                 self._emitNotice(f"Already in an active chat with '{self.active_peer_name}'. Use /leave first.")
                 return False
 
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.connect((target_peer.ip, target_peer.port))
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5.0)
+            sock.connect((target_peer.ip, target_peer.port))
+
+            # Send formal handshake
+            sendFrame(sock, TYPE_HANDSHAKE, {"sender": self.name, "listen_port": self.tcp_port})
+
+            # Wait for handshake response (acknowledgement or rejection)
+            resp = recvFrame(sock)
+            if not resp:
+                sock.close()
+                self._emitNotice(f"Connection closed by {target_peer.name} without handshake response.")
+                return False
+
+            resp_meta, _ = resp
+            resp_type = resp_meta.get("type", "")
+            if resp_type != TYPE_HANDSHAKE_ACK:
+                reason = resp_meta.get("reason", "Connection rejected by remote peer.")
+                sock.close()
+                self._emitNotice(f"Could not chat with {target_peer.name}: {reason}")
+                return False
+
+            # Confirmed handshake
+            verified_name = resp_meta.get("sender", target_peer.name)
+            sock.settimeout(None)
+
+            with self._session_lock:
                 self.active_sock = sock
-                self.active_peer_name = target_peer.name
+                self.active_peer_name = verified_name
                 self.active_peer_addr = (target_peer.ip, target_peer.port)
 
-                # Send initial handshake frame with our name
-                sendFrame(sock, TYPE_CHAT, {"sender": self.name}, f"*** {self.name} connected to chat ***".encode("utf-8"))
+            self._session_rx_thread = threading.Thread(
+                target=self._connectionRxLoop, args=(sock, verified_name), daemon=True, name=f"TCP-Rx-{verified_name}"
+            )
+            self._session_rx_thread.start()
+            self._emitNotice(f"Connected to {verified_name} ({target_peer.ip}:{target_peer.port}). Start typing messages!")
+            return True
 
-                self._session_rx_thread = threading.Thread(
-                    target=self._connectionRxLoop, args=(sock, target_peer.name), daemon=True, name=f"TCP-Rx-{target_peer.name}"
-                )
-                self._session_rx_thread.start()
-                self._emitNotice(f"Connected to {target_peer.name} ({target_peer.ip}:{target_peer.port}). Start typing messages!")
-                return True
-            except Exception as e:
-                self._emitNotice(f"Failed to connect to {target_peer.name} ({target_peer.ip}:{target_peer.port}): {e}")
-                return False
+        except socket.timeout:
+            self._emitNotice(f"Connection attempt to {target_peer.name} timed out during handshake.")
+            return False
+        except Exception as e:
+            self._emitNotice(f"Failed to connect to {target_peer.name} ({target_peer.ip}:{target_peer.port}): {e}")
+            return False
 
     def leaveChat(self) -> None:
         with self._session_lock:
@@ -251,32 +285,49 @@ class PeerNode:
                     if self.active_sock is not None:
                         # Reject concurrent chat connections if one is active
                         try:
-                            sendFrame(conn, TYPE_LEAVE, {"sender": self.name, "reason": "Busy in another chat"})
+                            sendFrame(conn, TYPE_HANDSHAKE_REJECT, {"sender": self.name, "reason": "Busy in another chat"})
                             conn.close()
                         except Exception:
                             pass
                         continue
 
-                    self.active_sock = conn
-                    # Identify peer by address lookup in PeerTable or fallback to IP:port
-                    found_peer = self.peer_table.getPeerByKey(addr[0], addr[1])
-                    if not found_peer:
-                        # Scan by IP
-                        for p in self.peer_table.getActivePeers():
-                            if p.ip == addr[0]:
-                                found_peer = p
-                                break
+                # Read incoming handshake frame
+                try:
+                    conn.settimeout(5.0)
+                    req = recvFrame(conn)
+                    if not req or req[0].get("type") != TYPE_HANDSHAKE:
+                        conn.close()
+                        continue
 
-                    peer_name = found_peer.name if found_peer else f"{addr[0]}:{addr[1]}"
-                    self.active_peer_name = peer_name
-                    self.active_peer_addr = addr
+                    req_meta, _ = req
+                    sender_name = req_meta.get("sender", f"{addr[0]}:{addr[1]}")
 
-                    self._emitNotice(f"Incoming connection accepted from {peer_name} ({addr[0]}:{addr[1]}).")
+                    with self._session_lock:
+                        if self.active_sock is not None:
+                            sendFrame(conn, TYPE_HANDSHAKE_REJECT, {"sender": self.name, "reason": "Busy in another chat"})
+                            conn.close()
+                            continue
+
+                        # Acknowledge handshake
+                        sendFrame(conn, TYPE_HANDSHAKE_ACK, {"sender": self.name, "listen_port": self.tcp_port})
+                        conn.settimeout(None)
+
+                        self.active_sock = conn
+                        self.active_peer_name = sender_name
+                        self.active_peer_addr = addr
+
+                    self._emitNotice(f"Incoming connection accepted from {sender_name} ({addr[0]}:{addr[1]}).")
 
                     self._session_rx_thread = threading.Thread(
-                        target=self._connectionRxLoop, args=(conn, peer_name), daemon=True, name=f"TCP-Rx-{peer_name}"
+                        target=self._connectionRxLoop, args=(conn, sender_name), daemon=True, name=f"TCP-Rx-{sender_name}"
                     )
                     self._session_rx_thread.start()
+
+                except (socket.timeout, Exception):
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
             except Exception:
                 if not self.running:

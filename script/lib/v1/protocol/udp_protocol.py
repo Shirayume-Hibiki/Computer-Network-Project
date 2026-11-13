@@ -3,6 +3,7 @@
 ║  Creator:                  Shirayume-Hibiki          ║
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
+║  13/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -16,10 +17,11 @@ MSG_GOODBYE: str = "GOODBYE"
 
 VALID_STATUSES: set[str] = {"online", "away", "offline"}
 
-def createBeacon(name: str, port: int, status: str = "online") -> bytes:
+def createBeacon(name: str, port: int, status: str = "online", node_id: str = "") -> bytes:
     payload = {
         "magic": PROTOCOL_MAGIC,
         "type": MSG_BEACON,
+        "node_id": node_id,
         "name": name,
         "port": port,
         "status": status if status in VALID_STATUSES else "online",
@@ -27,10 +29,11 @@ def createBeacon(name: str, port: int, status: str = "online") -> bytes:
     }
     return json.dumps(payload).encode("utf-8")
 
-def createStatusUpdate(name: str, port: int, status: str) -> bytes:
+def createStatusUpdate(name: str, port: int, status: str, node_id: str = "") -> bytes:
     payload = {
         "magic": PROTOCOL_MAGIC,
         "type": MSG_STATUS_UPDATE,
+        "node_id": node_id,
         "name": name,
         "port": port,
         "status": status if status in VALID_STATUSES else "online",
@@ -38,10 +41,11 @@ def createStatusUpdate(name: str, port: int, status: str) -> bytes:
     }
     return json.dumps(payload).encode("utf-8")
 
-def createGoodbye(name: str, port: int) -> bytes:
+def createGoodbye(name: str, port: int, node_id: str = "") -> bytes:
     payload = {
         "magic": PROTOCOL_MAGIC,
         "type": MSG_GOODBYE,
+        "node_id": node_id,
         "name": name,
         "port": port,
         "status": "offline",
