@@ -352,5 +352,36 @@ class TestLanChatP2P(unittest.TestCase):
         self.assertIsNone(self.alice.active_peer_name, "Alice active_peer_name must be None after Bob leaves")
         print("[E2E] Active chat cleanup on peer departure test PASSED!")
 
+    def test_p2p_logging_and_config_integration(self):
+        """Verify that P2P Node loads configs and creates log files in logs/."""
+        print("\n[E2E] Testing logging and config integration...")
+        from common_functions import loadLanChatConfig, loadUIConfig
+        cfg_lan = loadLanChatConfig()
+        cfg_ui = loadUIConfig()
+
+        self.assertIn("discovery_port", cfg_lan)
+        self.assertEqual(cfg_lan["discovery_port"], 9999)
+        self.assertIn("progress_bar_width", cfg_ui)
+
+        # Check that Alice's CNLogger created a log file
+        self.assertTrue(os.path.isfile(self.alice.log.filepath), "Log file must exist on disk")
+        with open(self.alice.log.filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+            self.assertIn("P2P Node initiated", content)
+        print("[E2E] Logging and config integration test PASSED!")
+
+    def test_terminal_ui_cross_platform_buffering(self):
+        """Verify TerminalUI buffers characters and redrawing correctly."""
+        print("\n[E2E] Testing TerminalUI buffering...")
+        from ui.terminal import TerminalUI
+        tui = TerminalUI(prompt="[Test] > ", ansi_enabled=False)
+
+        # Simulate buffer input
+        tui._input_buffer = ["h", "e", "l", "l", "o"]
+        # printLine should not crash in non-interactive / non-ANSI environments
+        tui.printLine("Background notification")
+        self.assertEqual("".join(tui._input_buffer), "hello")
+        print("[E2E] TerminalUI buffering test PASSED!")
+
 if __name__ == "__main__":
     unittest.main()

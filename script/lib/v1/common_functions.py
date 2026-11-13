@@ -5,12 +5,39 @@
 ║  Edit dates / contributor:                           ║
 ║  03/11/26 diamboy                                    ║
 ║  05/11/26 Gemini 3.8 Flash                           ║
+║  13/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
+import os
 import pydoc
 import socket
 import sys
+import tomllib
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+COMMON_CONFIG_PATH = os.path.join(PROJECT_ROOT, "configs", "common_config.toml")
+UI_CONFIG_PATH = os.path.join(PROJECT_ROOT, "configs", "UI_config.toml")
+
+def loadLanChatConfig(configpath: str = COMMON_CONFIG_PATH) -> dict:
+    if os.path.exists(configpath):
+        try:
+            with open(configpath, "rb") as f:
+                data = tomllib.load(f)
+                return data.get("lan_chat", {})
+        except Exception:
+            pass
+    return {}
+
+def loadUIConfig(configpath: str = UI_CONFIG_PATH) -> dict:
+    if os.path.exists(configpath):
+        try:
+            with open(configpath, "rb") as f:
+                data = tomllib.load(f)
+                return data.get("UI", {})
+        except Exception:
+            pass
+    return {}
 
 # Ensure UTF-8 output if terminal supports reconfigure
 try:

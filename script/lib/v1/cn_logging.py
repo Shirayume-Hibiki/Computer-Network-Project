@@ -4,11 +4,13 @@
 ║  Creation date:            18/10/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  03/11/26 diamboy                                    ║
+║  13/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
 import datetime
 import os
+import threading
 import tomllib
 
 from UI import UI
@@ -27,36 +29,55 @@ def loadLogConfig(configpath: str = LOG_CONFIG_PATH) -> dict:
     return {}
 
 class CNLogger:
+    _lock = threading.Lock()
+
     def __init__(self, instancepfx: str = "session", configpath: str = LOG_CONFIG_PATH):
-        self.instancepfx = instancepfx
+        # Sanitize instancepfx to prevent invalid characters or path traversal
+        clean_pfx = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in instancepfx).strip("_")
+        self.instancepfx = clean_pfx or "session"
         self.configpath: str = configpath
         self.logdir: str = LOG_DIR
         self.filetimeformat: str = FILE_TIME_FORMAT
         self.timeformat: str = TIME_FORMAT
         self.filepath: str = ""
+        self._file_handle = None
 
     def initLogger(self) -> str:
-        config = loadLogConfig(self.configpath)
-        rawlogdir = config.get("log_dir", LOG_DIR)
-        self.logdir = rawlogdir if os.path.isabs(rawlogdir) else os.path.join(PROJECT_ROOT, rawlogdir)
-        self.timeformat = config.get("time_format", TIME_FORMAT)
+        with self._lock:
+            if self.filepath and self._file_handle:
+                return self.filepath
+            config = loadLogConfig(self.configpath)
+            rawlogdir = config.get("log_dir", LOG_DIR)
+            self.logdir = rawlogdir if os.path.isabs(rawlogdir) else os.path.join(PROJECT_ROOT, rawlogdir)
+            self.timeformat = config.get("time_format", TIME_FORMAT)
 
-        os.makedirs(self.logdir, exist_ok=True)
-        inittime = datetime.datetime.now().strftime(self.filetimeformat)
-        filename = f"{self.instancepfx}_{inittime}.log"
-        self.filepath = os.path.join(self.logdir, filename)
-        return self.filepath
+            os.makedirs(self.logdir, exist_ok=True)
+            inittime = datetime.datetime.now().strftime(self.filetimeformat)
+            filename = f"{self.instancepfx}_{inittime}.log"
+            self.filepath = os.path.join(self.logdir, filename)
+            self._file_handle = open(self.filepath, "a", encoding="utf-8", buffering=1)
+            return self.filepath
 
     def getTimestamp(self) -> str:
         return datetime.datetime.now().strftime(self.timeformat)
 
     def writeLog(self, role: str, action: str, msg: str):
-        self.filepath = self.filepath or self.initLogger()
+        with self._lock:
+            if not self._file_handle:
+                self.initLogger()
+            timestamp = f"[{self.getTimestamp()}]"
+            logline = f"{timestamp} -> [{role}] ({action}): {msg}\n"
+            self._file_handle.write(logline)
+            self._file_handle.flush()
 
-        timestamp = f"[{self.getTimestamp()}]"
-        logline = f"{timestamp} -> [{role}] ({action}): {msg}\n"
-        with open(self.filepath, "a", encoding="utf-8") as logfile:
-            logfile.write(logline)
+    def close(self):
+        with self._lock:
+            if self._file_handle:
+                try:
+                    self._file_handle.close()
+                except Exception:
+                    pass
+                self._file_handle = None
 
     def logServer(self, msg: str, action: str = "INFO", console: bool = False):
         self.writeLog("SERVER", action, msg)

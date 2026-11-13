@@ -1,1 +1,4 @@
 [UI]
+progress_bar_width = 20
+show_timestamps = true
+ansi_enabled = true

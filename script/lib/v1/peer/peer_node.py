@@ -13,6 +13,8 @@ import threading
 import uuid
 from typing import Callable
 
+from cn_logging import CNLogger as log
+from common_functions import loadLanChatConfig
 from file_transfer.file_manager import (
     ActiveIncomingTransfer,
     FileSender,
@@ -50,13 +52,21 @@ class PeerNode:
         on_file_error: Callable[[str, str], None] | None = None,
         on_notice: Callable[[str], None] | None = None,
     ):
+        config = loadLanChatConfig()
         self.name = name
         self.tcp_port = tcp_port
-        self.discovery_port = discovery_port
-        self.downloads_dir = downloads_dir
-        self.broadcast_addr = broadcast_addr
-        self.status = status
+        self.discovery_port = discovery_port if discovery_port != 9999 else int(config.get("discovery_port", 9999))
+        self.beacon_interval = float(config.get("beacon_interval", 3.0))
+        self.peer_timeout = float(config.get("peer_timeout", 10.0))
+        self.downloads_dir = downloads_dir if downloads_dir != "downloads" else str(config.get("downloads_dir", "downloads"))
+        self.broadcast_addr = broadcast_addr if broadcast_addr != "255.255.255.255" else str(config.get("broadcast_address", "255.255.255.255"))
+        self.status = status if status != "online" else str(config.get("default_status", "online"))
+        self.file_chunk_size = int(config.get("file_chunk_size", 65536))
         self.node_id = str(uuid.uuid4())
+
+        self.log = log(instancepfx=f"peer_{self.name.lower()}")
+        self.log.initLogger()
+        self.log.logSystem(f"P2P Node initiated for '{self.name}'. TCP Port: {self.tcp_port}, Discovery: {self.discovery_port}", action="INIT")
 
         self.on_message = on_message
         self.on_file_progress = on_file_progress
@@ -64,11 +74,12 @@ class PeerNode:
         self.on_file_error = on_file_error
         self.on_notice = on_notice
 
-        self.peer_table = PeerTable(timeout=10.0)
+        self.peer_table = PeerTable(timeout=self.peer_timeout)
         self.broadcaster = UdpBroadcaster(
             name=self.name,
             tcp_port=self.tcp_port,
             discovery_port=self.discovery_port,
+            interval=self.beacon_interval,
             broadcast_addr=self.broadcast_addr,
             status=self.status,
             node_id=self.node_id,
@@ -116,9 +127,11 @@ class PeerNode:
             self.active_peer_addr = None
 
     def _handlePeerJoin(self, peer: Peer) -> None:
+        self.log.logSystem(f"Peer '{peer.name}' joined ({peer.ip}:{peer.port}) [{peer.status}]", action="DISCOVERY")
         self._emitNotice(f"[Discovery] Peer '{peer.name}' is now {peer.status} ({peer.ip}:{peer.port})")
 
     def _handlePeerLeave(self, peer: Peer) -> None:
+        self.log.logSystem(f"Peer '{peer.name}' left the network", action="DISCOVERY")
         self._emitNotice(f"[Discovery] Peer '{peer.name}' left the network.")
         with self._session_lock:
             if self.active_peer_name and self.active_peer_name.lower() == peer.name.lower():
@@ -126,9 +139,11 @@ class PeerNode:
                 self._emitNotice(f"[Chat] Active chat peer '{peer.name}' departed. Chat session closed.")
 
     def _handlePeerStatusChange(self, peer: Peer, new_status: str) -> None:
+        self.log.logSystem(f"Peer '{peer.name}' is now {new_status}", action="STATUS")
         self._emitNotice(f"[Discovery] Peer '{peer.name}' is now {new_status}.")
 
     def _handlePeerTimeout(self, peer: Peer) -> None:
+        self.log.logWarn(f"Peer '{peer.name}' timed out (inactive > {self.peer_timeout}s)", action="TIMEOUT")
         self._emitNotice(f"[Discovery] Peer '{peer.name}' timed out (inactive > 10s).")
         with self._session_lock:
             if self.active_peer_name and self.active_peer_name.lower() == peer.name.lower():
@@ -157,6 +172,7 @@ class PeerNode:
 
     def stop(self) -> None:
         self.running = False
+        self.log.logSystem(f"P2P Node '{self.name}' shutting down.", action="SHUTDOWN")
 
         # Close active chat session
         self.leaveChat()
@@ -172,6 +188,7 @@ class PeerNode:
             except Exception:
                 pass
             self.tcp_server_sock = None
+        self.log.close()
 
     def setStatus(self, status: str) -> None:
         self.status = status
@@ -231,6 +248,7 @@ class PeerNode:
                 target=self._connectionRxLoop, args=(sock, verified_name), daemon=True, name=f"TCP-Rx-{verified_name}"
             )
             self._session_rx_thread.start()
+            self.log.logClient(f"Connected to {verified_name} ({target_peer.ip}:{target_peer.port})", action="CONNECT")
             self._emitNotice(f"Connected to {verified_name} ({target_peer.ip}:{target_peer.port}). Start typing messages!")
             return True
 
@@ -257,6 +275,7 @@ class PeerNode:
                 self.active_peer_name = None
                 self.active_peer_addr = None
                 if name:
+                    self.log.logClient(f"Disconnected from chat with {name}", action="DISCONNECT")
                     self._emitNotice(f"Disconnected from chat with {name}.")
 
     def sendMessage(self, text: str) -> bool:
@@ -266,8 +285,10 @@ class PeerNode:
                 return False
             try:
                 sendFrame(self.active_sock, TYPE_CHAT, {"sender": self.name}, text.encode("utf-8"), write_lock=self.sock_write_lock)
+                self.log.logClient(f"Sent message to {self.active_peer_name}: {text}", action="CHAT_SEND")
                 return True
             except Exception as e:
+                self.log.logError(f"Failed to send message: {e}", action="CHAT_SEND")
                 self._emitNotice(f"Failed to send message: {e}")
                 return False
 
@@ -284,6 +305,7 @@ class PeerNode:
             sock = self.active_sock
             target_name = self.active_peer_name or "Peer"
 
+            self.log.logClient(f"Proposing file '{os.path.basename(filepath)}' to {target_name}", action="FILE_SEND")
             sender = FileSender(
                 sock=sock,
                 filepath=filepath,
@@ -369,6 +391,7 @@ class PeerNode:
 
                 if msg_type == TYPE_CHAT:
                     text = body.decode("utf-8", errors="replace")
+                    self.log.logServer(f"Received chat from {sender}: {text}", action="CHAT_RECV")
                     if self.on_message:
                         self.on_message(sender, text)
 
@@ -379,6 +402,7 @@ class PeerNode:
                     expected_sha256 = meta["sha256"]
                     dest_path, file_handle = getUniqueDownloadHandle(self.downloads_dir, filename)
 
+                    self.log.logServer(f"Receiving file '{filename}' ({file_size} bytes) from {sender} -> {dest_path}", action="FILE_RECV")
                     receiver = ActiveIncomingTransfer(
                         file_id=file_id,
                         filename=filename,
@@ -394,12 +418,14 @@ class PeerNode:
 
                 elif msg_type == TYPE_FILE_ACCEPT:
                     file_id = meta["file_id"]
+                    self.log.logClient(f"File transfer accepted by remote peer: {file_id}", action="FILE_ACCEPT")
                     if file_id in self.active_senders:
                         self.active_senders[file_id].notifyAccepted()
 
                 elif msg_type == TYPE_FILE_REJECT:
                     file_id = meta["file_id"]
                     reason = meta.get("reason", "")
+                    self.log.logWarn(f"File transfer rejected by remote peer: {reason}", action="FILE_REJECT")
                     if file_id in self.active_senders:
                         self.active_senders[file_id].notifyRejected(reason)
 
@@ -418,10 +444,12 @@ class PeerNode:
                         rx = self.active_receivers.pop(file_id)
                         is_valid = rx.finish()
                         if is_valid:
+                            self.log.logServer(f"File '{rx.filename}' downloaded and verified (SHA-256 match)", action="FILE_COMPLETE")
                             if self.on_file_complete:
                                 self.on_file_complete(rx.filename, rx.dest_path, False)
                         else:
                             rx.abort()  # Delete corrupted file on SHA-256 verification failure
+                            self.log.logError(f"File '{rx.filename}' failed SHA-256 verification, discarded", action="FILE_ERROR")
                             if self.on_file_error:
                                 self.on_file_error(rx.filename, "SHA256 checksum verification failed! Corrupted file discarded.")
 

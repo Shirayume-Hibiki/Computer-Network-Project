@@ -3,6 +3,7 @@
 ║  Creator:                  Shirayume-Hibiki          ║
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
+║  13/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -10,6 +11,7 @@ import os
 import sys
 import time
 
+from common_functions import loadUIConfig
 from peer.peer_node import PeerNode
 from ui.terminal import TerminalUI
 
@@ -22,7 +24,12 @@ def formatProgressBar(percentage: float, width: int = 20) -> str:
 class CliHandler:
     def __init__(self, node: PeerNode):
         self.node = node
-        self.ui = TerminalUI(prompt=f"[{node.name}] > ")
+        ui_cfg = loadUIConfig()
+        self.progress_width = int(ui_cfg.get("progress_bar_width", 20))
+        self.show_timestamps = bool(ui_cfg.get("show_timestamps", True))
+        ansi_enabled = bool(ui_cfg.get("ansi_enabled", True))
+
+        self.ui = TerminalUI(prompt=f"[{node.name}] > ", ansi_enabled=ansi_enabled)
         self._wireCallbacks()
 
     def _wireCallbacks(self) -> None:
@@ -33,12 +40,12 @@ class CliHandler:
         self.node.on_notice = self._handleNotice
 
     def _handleIncomingMessage(self, sender: str, text: str) -> None:
-        timestamp = time.strftime("%H:%M:%S")
-        self.ui.printLine(f"[{timestamp}] <{sender}>: {text}")
+        prefix = f"[{time.strftime('%H:%M:%S')}] " if self.show_timestamps else ""
+        self.ui.printLine(f"{prefix}<{sender}>: {text}")
 
     def _handleFileProgress(self, filename: str, done: int, total: int, pct: float, is_upload: bool) -> None:
         direction = "Upload" if is_upload else "Download"
-        bar = formatProgressBar(pct, width=20)
+        bar = formatProgressBar(pct, width=self.progress_width)
         line = f"[{direction}] {filename} {bar} {pct:5.1f}% ({done}/{total} bytes)"
         self.ui.printLine(line)
 
