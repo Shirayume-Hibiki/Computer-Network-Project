@@ -188,10 +188,12 @@ class UdpListener:
                             continue
 
                 if msg_type == MSG_GOODBYE:
-                    removed = self.peer_table.removePeer(sender_ip, peer_tcp_port)
+                    removed = self.peer_table.removePeer(sender_ip, peer_tcp_port, name=peer_name)
                     if removed and self.on_peer_leave:
                         self.on_peer_leave(removed)
                 elif msg_type in (MSG_BEACON, MSG_STATUS_UPDATE):
+                    if status not in ("online", "away"):
+                        status = "online"
                     is_new, status_changed, peer = self.peer_table.addOrUpdatePeer(
                         name=peer_name,
                         ip=sender_ip,

@@ -59,10 +59,15 @@ class PeerTable:
                 self._peers[name_key] = peer
                 return True, False, peer
 
-    def removePeer(self, ip: str, port: int) -> Peer | None:
+    def removePeer(self, ip: str, port: int, name: str | None = None) -> Peer | None:
         with self._lock:
+            if name:
+                peer = self._peers.get(name.lower())
+                if peer:
+                    del self._peers[name.lower()]
+                    return peer
             for k, peer in list(self._peers.items()):
-                if (peer.ip == ip or peer.ip.startswith("127.") or ip.startswith("127.")) and peer.port == port:
+                if peer.ip == ip and peer.port == port:
                     del self._peers[k]
                     return peer
             return None

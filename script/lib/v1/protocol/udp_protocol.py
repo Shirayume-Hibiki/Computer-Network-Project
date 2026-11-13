@@ -63,6 +63,12 @@ def parseDatagram(data: bytes) -> dict | None:
             return None
         if "type" not in payload or "name" not in payload or "port" not in payload:
             return None
+        
+        # Enforce strict validation on status field
+        status = payload.get("status")
+        if not isinstance(status, str) or status not in VALID_STATUSES:
+            payload["status"] = "online"
+            
         return payload
     except Exception:
         return None

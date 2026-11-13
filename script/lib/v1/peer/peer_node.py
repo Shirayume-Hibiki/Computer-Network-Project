@@ -105,17 +105,35 @@ class PeerNode:
         if self.on_notice:
             self.on_notice(msg)
 
+    def _closeActiveSession(self) -> None:
+        if self.active_sock is not None:
+            try:
+                self.active_sock.close()
+            except Exception:
+                pass
+            self.active_sock = None
+            self.active_peer_name = None
+            self.active_peer_addr = None
+
     def _handlePeerJoin(self, peer: Peer) -> None:
         self._emitNotice(f"[Discovery] Peer '{peer.name}' is now {peer.status} ({peer.ip}:{peer.port})")
 
     def _handlePeerLeave(self, peer: Peer) -> None:
         self._emitNotice(f"[Discovery] Peer '{peer.name}' left the network.")
+        with self._session_lock:
+            if self.active_peer_name and self.active_peer_name.lower() == peer.name.lower():
+                self._closeActiveSession()
+                self._emitNotice(f"[Chat] Active chat peer '{peer.name}' departed. Chat session closed.")
 
     def _handlePeerStatusChange(self, peer: Peer, new_status: str) -> None:
         self._emitNotice(f"[Discovery] Peer '{peer.name}' is now {new_status}.")
 
     def _handlePeerTimeout(self, peer: Peer) -> None:
         self._emitNotice(f"[Discovery] Peer '{peer.name}' timed out (inactive > 10s).")
+        with self._session_lock:
+            if self.active_peer_name and self.active_peer_name.lower() == peer.name.lower():
+                self._closeActiveSession()
+                self._emitNotice(f"[Chat] Active chat peer '{peer.name}' timed out. Chat session closed.")
 
     def start(self) -> None:
         self.running = True
@@ -178,6 +196,7 @@ class PeerNode:
 
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             sock.settimeout(5.0)
             sock.connect((target_peer.ip, target_peer.port))
 
@@ -314,6 +333,7 @@ class PeerNode:
                         # Acknowledge handshake
                         sendFrame(conn, TYPE_HANDSHAKE_ACK, {"sender": self.name, "listen_port": self.tcp_port})
                         conn.settimeout(None)
+                        conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
                         self.active_sock = conn
                         self.active_peer_name = sender_name

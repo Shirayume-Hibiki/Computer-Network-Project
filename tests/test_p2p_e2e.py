@@ -278,5 +278,79 @@ class TestLanChatP2P(unittest.TestCase):
 
         print("[E2E] Filename sanitization test PASSED!")
 
+    def test_status_validation_and_sanitization(self):
+        """Verify that unvalidated/corrupted status strings in beacons are sanitized to 'online'."""
+        print("\n[E2E] Testing status validation...")
+        import json
+        from protocol.udp_protocol import parseDatagram
+
+        # Malformed / invalid status values
+        bad_packet = json.dumps({
+            "magic": "LANCHAT",
+            "type": "BEACON",
+            "name": "Eve",
+            "port": 5005,
+            "status": "super_hacked_status_12345"
+        }).encode("utf-8")
+
+        parsed = parseDatagram(bad_packet)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["status"], "online", "Invalid status string must be sanitized to 'online'")
+
+        numeric_status_packet = json.dumps({
+            "magic": "LANCHAT",
+            "type": "BEACON",
+            "name": "Eve",
+            "port": 5005,
+            "status": 9999
+        }).encode("utf-8")
+
+        parsed_num = parseDatagram(numeric_status_packet)
+        self.assertIsNotNone(parsed_num)
+        self.assertEqual(parsed_num["status"], "online", "Non-string status must be sanitized to 'online'")
+        print("[E2E] Status validation test PASSED!")
+
+    def test_peer_goodbye_does_not_delete_wrong_peer_on_same_port(self):
+        """Verify that GOODBYE from Bob does not delete Charlie who happens to share the same port."""
+        print("\n[E2E] Testing targeted peer deletion on GOODBYE...")
+        from peer.peer_table import PeerTable
+        table = PeerTable(timeout=10.0)
+
+        # Bob and Charlie both registered on port 7002 at different IPs
+        table.addOrUpdatePeer("Bob", "192.168.1.50", 7002, "online")
+        table.addOrUpdatePeer("Charlie", "192.168.1.60", 7002, "online")
+
+        # Bob departs with GOODBYE
+        table.removePeer("192.168.1.50", 7002, name="Bob")
+
+        # Verify Bob is removed, but Charlie remains completely intact!
+        self.assertIsNone(table.getPeerByName("Bob"))
+        charlie = table.getPeerByName("Charlie")
+        self.assertIsNotNone(charlie)
+        self.assertEqual(charlie.ip, "192.168.1.60")
+        print("[E2E] Targeted peer deletion test PASSED!")
+
+    def test_active_chat_cleans_up_on_peer_goodbye(self):
+        """Verify that when the remote active peer leaves, the local active session cleanly tears down."""
+        print("\n[E2E] Testing active chat cleanup on peer departure...")
+        self.alice.start()
+        self.bob.start()
+        time.sleep(1.2)
+
+        # Alice connects to Bob
+        ok = self.alice.connectToPeer("Bob")
+        self.assertTrue(ok)
+        time.sleep(0.5)
+        self.assertEqual(self.alice.active_peer_name, "Bob")
+
+        # Bob stops and broadcasts GOODBYE
+        self.bob.stop()
+        time.sleep(1.0)
+
+        # Alice should have automatically cleaned up active session!
+        self.assertIsNone(self.alice.active_sock, "Alice active_sock must be None after Bob leaves")
+        self.assertIsNone(self.alice.active_peer_name, "Alice active_peer_name must be None after Bob leaves")
+        print("[E2E] Active chat cleanup on peer departure test PASSED!")
+
 if __name__ == "__main__":
     unittest.main()
