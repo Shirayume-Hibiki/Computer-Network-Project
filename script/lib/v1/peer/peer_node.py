@@ -16,7 +16,7 @@ from typing import Callable
 from file_transfer.file_manager import (
     ActiveIncomingTransfer,
     FileSender,
-    getUniqueDownloadPath,
+    getUniqueDownloadHandle,
 )
 from peer.discovery import UdpBroadcaster, UdpListener
 from peer.peer_table import Peer, PeerTable
@@ -91,6 +91,7 @@ class PeerNode:
 
         # Active chat session
         self._session_lock = threading.Lock()
+        self.sock_write_lock = threading.Lock()
         self.active_sock: socket.socket | None = None
         self.active_peer_name: str | None = None
         self.active_peer_addr: tuple[str, int] | None = None
@@ -225,7 +226,7 @@ class PeerNode:
         with self._session_lock:
             if self.active_sock is not None:
                 try:
-                    sendFrame(self.active_sock, TYPE_LEAVE, {"sender": self.name, "reason": "User left"})
+                    sendFrame(self.active_sock, TYPE_LEAVE, {"sender": self.name, "reason": "User left"}, write_lock=self.sock_write_lock)
                 except Exception:
                     pass
                 try:
@@ -245,7 +246,7 @@ class PeerNode:
                 self._emitNotice("Not in a chat session. Use /chat <username|index> to connect to a peer.")
                 return False
             try:
-                sendFrame(self.active_sock, TYPE_CHAT, {"sender": self.name}, text.encode("utf-8"))
+                sendFrame(self.active_sock, TYPE_CHAT, {"sender": self.name}, text.encode("utf-8"), write_lock=self.sock_write_lock)
                 return True
             except Exception as e:
                 self._emitNotice(f"Failed to send message: {e}")
@@ -268,9 +269,11 @@ class PeerNode:
                 sock=sock,
                 filepath=filepath,
                 target_name=target_name,
+                write_lock=self.sock_write_lock,
                 on_progress=lambda fn, done, total, pct: self.on_file_progress(fn, done, total, pct, True) if self.on_file_progress else None,
                 on_complete=lambda fn, path: self.on_file_complete(fn, path, True) if self.on_file_complete else None,
                 on_error=lambda fn, err: self.on_file_error(fn, err) if self.on_file_error else None,
+                on_cleanup=lambda fid: self.active_senders.pop(fid, None),
             )
             self.active_senders[sender.file_id] = sender
             sender.start()
@@ -354,7 +357,7 @@ class PeerNode:
                     filename = meta["filename"]
                     file_size = meta["file_size"]
                     expected_sha256 = meta["sha256"]
-                    dest_path = getUniqueDownloadPath(self.downloads_dir, filename)
+                    dest_path, file_handle = getUniqueDownloadHandle(self.downloads_dir, filename)
 
                     receiver = ActiveIncomingTransfer(
                         file_id=file_id,
@@ -362,11 +365,12 @@ class PeerNode:
                         file_size=file_size,
                         expected_sha256=expected_sha256,
                         dest_path=dest_path,
+                        file_handle=file_handle,
                     )
                     self.active_receivers[file_id] = receiver
                     self._emitNotice(f"Receiving file '{filename}' ({file_size} bytes) from {sender} into {dest_path}...")
-                    # Automatically accept transfer
-                    sendFrame(sock, TYPE_FILE_ACCEPT, {"file_id": file_id, "offset": 0})
+                    # Automatically accept transfer using socket write lock
+                    sendFrame(sock, TYPE_FILE_ACCEPT, {"file_id": file_id, "offset": 0}, write_lock=self.sock_write_lock)
 
                 elif msg_type == TYPE_FILE_ACCEPT:
                     file_id = meta["file_id"]
@@ -397,8 +401,9 @@ class PeerNode:
                             if self.on_file_complete:
                                 self.on_file_complete(rx.filename, rx.dest_path, False)
                         else:
+                            rx.abort()  # Delete corrupted file on SHA-256 verification failure
                             if self.on_file_error:
-                                self.on_file_error(rx.filename, "SHA256 checksum verification failed!")
+                                self.on_file_error(rx.filename, "SHA256 checksum verification failed! Corrupted file discarded.")
 
                 elif msg_type == TYPE_LEAVE:
                     reason = meta.get("reason", "Disconnected")
@@ -408,6 +413,16 @@ class PeerNode:
         except Exception as e:
             self._emitNotice(f"Chat connection error with {peer_name}: {e}")
         finally:
+            # Clean up and abort any in-flight incoming transfers to avoid file handle leaks
+            for f_id, rx in list(self.active_receivers.items()):
+                rx.abort()
+            self.active_receivers.clear()
+
+            # Abort any in-flight outgoing transfers
+            for f_id, tx in list(self.active_senders.items()):
+                tx.notifyRejected("Connection closed")
+            self.active_senders.clear()
+
             with self._session_lock:
                 if self.active_sock is sock:
                     self.active_sock = None

@@ -7,9 +7,12 @@
 ╚══════════════════════════════════════════════════════╝
 '''
 
+from __future__ import annotations
+
 import json
 import socket
 import struct
+import threading
 import time
 
 FRAME_MAGIC: bytes = b"LC"
@@ -28,7 +31,13 @@ TYPE_FILE_CHUNK: str = "FILE_CHUNK"
 TYPE_FILE_COMPLETE: str = "FILE_COMPLETE"
 TYPE_LEAVE: str = "LEAVE"
 
-def sendFrame(sock: socket.socket, msg_type: str, metadata: dict | None = None, body: bytes = b"") -> None:
+def sendFrame(
+    sock: socket.socket,
+    msg_type: str,
+    metadata: dict | None = None,
+    body: bytes = b"",
+    write_lock: threading.Lock | None = None,
+) -> None:
     if metadata is None:
         metadata = {}
     
@@ -48,7 +57,11 @@ def sendFrame(sock: socket.socket, msg_type: str, metadata: dict | None = None, 
     
     # Send atomic frame: header + metadata + body
     packet = header + meta_bytes + body
-    sock.sendall(packet)
+    if write_lock:
+        with write_lock:
+            sock.sendall(packet)
+    else:
+        sock.sendall(packet)
 
 def recvExact(sock: socket.socket, length: int) -> bytes:
     buffer = bytearray()

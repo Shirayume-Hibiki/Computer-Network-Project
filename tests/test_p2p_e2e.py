@@ -210,5 +210,73 @@ class TestLanChatP2P(unittest.TestCase):
 
         print("[E2E] Peer table port update test PASSED!")
 
+    def test_concurrent_chat_during_file_transfer(self):
+        """Verify that concurrent chat messages do not corrupt TCP framing during chunked file transfer."""
+        print("\n[E2E] Testing concurrent chat during file transfer...")
+        self.alice.start()
+        self.bob.start()
+        time.sleep(1.2)
+
+        ok = self.alice.connectToPeer("Bob")
+        self.assertTrue(ok)
+        time.sleep(0.5)
+
+        # Create larger test file (400 KB)
+        large_file = os.path.join(self.test_dir, "large_doc.bin")
+        with open(large_file, "wb") as f:
+            f.write(os.urandom(400 * 1024))
+
+        # Start file transfer
+        self.alice.sendFile(large_file)
+
+        # Concurrently send chat messages while file is being transferred
+        for i in range(10):
+            self.alice.sendMessage(f"Concurrent message {i}")
+            time.sleep(0.02)
+
+        # Wait for file transfer to complete
+        time.sleep(3.0)
+
+        # Verify chat messages were received without frame corruption
+        chat_texts = [m[1] for m in self.bob_msgs]
+        for i in range(10):
+            self.assertIn(f"Concurrent message {i}", chat_texts)
+
+        # Verify file received and matches exact size
+        self.assertGreaterEqual(len(self.bob_files), 1)
+        received_path = self.bob_files[0][1]
+        self.assertEqual(os.path.getsize(received_path), 400 * 1024)
+
+        self.alice.leaveChat()
+        print("[E2E] Concurrent chat during file transfer test PASSED!")
+
+    def test_filename_sanitization_and_traversal_prevention(self):
+        """Verify filename sanitization prevents traversal and crashes on invalid/dot filenames."""
+        print("\n[E2E] Testing filename sanitization...")
+        from file_transfer.file_manager import getUniqueDownloadHandle, sanitizeFilename
+
+        # Traversal and invalid names
+        self.assertEqual(sanitizeFilename("../../evil.exe"), "evil.exe")
+        self.assertEqual(sanitizeFilename("..\\..\\windows\\system32.dll"), "system32.dll")
+        self.assertTrue(sanitizeFilename("").startswith("download_"))
+        self.assertTrue(sanitizeFilename(".").startswith("download_"))
+        self.assertTrue(sanitizeFilename("..").startswith("download_"))
+        self.assertEqual(sanitizeFilename(".bashrc"), "bashrc")
+
+        # Atomic handle creation without TOCTOU race
+        dest_dir = os.path.join(self.test_dir, "sanitize_dl")
+        path1, h1 = getUniqueDownloadHandle(dest_dir, "notes.txt")
+        path2, h2 = getUniqueDownloadHandle(dest_dir, "notes.txt")
+        self.assertNotEqual(path1, path2)
+        h1.close()
+        h2.close()
+
+        # Malicious traversal path is trapped inside dest_dir
+        path_trav, ht = getUniqueDownloadHandle(dest_dir, "../../../../outside.txt")
+        ht.close()
+        self.assertTrue(os.path.abspath(path_trav).startswith(os.path.abspath(dest_dir)))
+
+        print("[E2E] Filename sanitization test PASSED!")
+
 if __name__ == "__main__":
     unittest.main()
