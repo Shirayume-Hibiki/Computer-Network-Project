@@ -4,6 +4,7 @@
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -61,9 +62,28 @@ def parseDatagram(data: bytes) -> dict | None:
             return None
         if payload.get("magic") != PROTOCOL_MAGIC:
             return None
-        if "type" not in payload or "name" not in payload or "port" not in payload:
+
+        # Validate message type
+        msg_type = payload.get("type")
+        if msg_type not in (MSG_BEACON, MSG_STATUS_UPDATE, MSG_GOODBYE):
             return None
-        
+
+        # Validate username length and type
+        name = payload.get("name")
+        if not isinstance(name, str) or not (1 <= len(name.strip()) <= 32):
+            return None
+        payload["name"] = name.strip()
+
+        # Validate TCP port strictly within 1..65535
+        raw_port = payload.get("port")
+        try:
+            port = int(raw_port)
+            if not (1 <= port <= 65535):
+                return None
+            payload["port"] = port
+        except (ValueError, TypeError):
+            return None
+
         # Enforce strict validation on status field
         status = payload.get("status")
         if not isinstance(status, str) or status not in VALID_STATUSES:

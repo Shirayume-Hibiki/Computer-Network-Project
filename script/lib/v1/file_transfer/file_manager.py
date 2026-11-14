@@ -4,6 +4,7 @@
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -223,6 +224,10 @@ class ActiveIncomingTransfer:
 
     def writeChunk(self, chunk: bytes) -> None:
         if not self.is_closed:
+            if self.bytes_received + len(chunk) > self.file_size:
+                raise ValueError(
+                    f"Received chunk exceeds declared file size ({self.bytes_received + len(chunk)} > {self.file_size})"
+                )
             self.file_handle.write(chunk)
             self.hasher.update(chunk)
             self.bytes_received += len(chunk)

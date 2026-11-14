@@ -4,6 +4,7 @@
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -62,6 +63,9 @@ class PeerNode:
         self.broadcast_addr = broadcast_addr if broadcast_addr != "255.255.255.255" else str(config.get("broadcast_address", "255.255.255.255"))
         self.status = status if status != "online" else str(config.get("default_status", "online"))
         self.file_chunk_size = int(config.get("file_chunk_size", 65536))
+        self.max_file_size = int(config.get("max_file_size", 104857600))
+        self.max_concurrent_downloads = int(config.get("max_concurrent_downloads", 3))
+        self.session_timeout = float(config.get("session_timeout", 60.0))
         self.node_id = str(uuid.uuid4())
 
         self.log = log(instancepfx=f"peer_{self.name.lower()}")
@@ -171,6 +175,8 @@ class PeerNode:
         self.broadcaster.start()
 
     def stop(self) -> None:
+        if not self.running:
+            return
         self.running = False
         self.log.logSystem(f"P2P Node '{self.name}' shutting down.", action="SHUTDOWN")
 
@@ -237,7 +243,7 @@ class PeerNode:
 
             # Confirmed handshake
             verified_name = resp_meta.get("sender", target_peer.name)
-            sock.settimeout(None)
+            sock.settimeout(self.session_timeout)
 
             with self._session_lock:
                 self.active_sock = sock
@@ -354,7 +360,7 @@ class PeerNode:
 
                         # Acknowledge handshake
                         sendFrame(conn, TYPE_HANDSHAKE_ACK, {"sender": self.name, "listen_port": self.tcp_port})
-                        conn.settimeout(None)
+                        conn.settimeout(self.session_timeout)
                         conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
                         self.active_sock = conn
@@ -400,6 +406,23 @@ class PeerNode:
                     filename = meta["filename"]
                     file_size = meta["file_size"]
                     expected_sha256 = meta["sha256"]
+
+                    # Check file size limit
+                    if file_size > self.max_file_size or file_size < 0:
+                        reason = f"File size exceeds maximum allowed limit ({file_size} > {self.max_file_size} bytes)"
+                        self.log.logWarn(f"Rejected file '{filename}' from {sender}: {reason}", action="FILE_REJECT")
+                        sendFrame(sock, TYPE_FILE_REJECT, {"file_id": file_id, "reason": reason}, write_lock=self.sock_write_lock)
+                        self._emitNotice(f"Rejected file '{filename}' from {sender}: {reason}")
+                        continue
+
+                    # Check max concurrent incoming transfers limit
+                    if len(self.active_receivers) >= self.max_concurrent_downloads:
+                        reason = f"Max concurrent downloads limit reached ({self.max_concurrent_downloads})"
+                        self.log.logWarn(f"Rejected file '{filename}' from {sender}: {reason}", action="FILE_REJECT")
+                        sendFrame(sock, TYPE_FILE_REJECT, {"file_id": file_id, "reason": reason}, write_lock=self.sock_write_lock)
+                        self._emitNotice(f"Rejected file '{filename}' from {sender}: {reason}")
+                        continue
+
                     dest_path, file_handle = getUniqueDownloadHandle(self.downloads_dir, filename)
 
                     self.log.logServer(f"Receiving file '{filename}' ({file_size} bytes) from {sender} -> {dest_path}", action="FILE_RECV")
@@ -433,10 +456,19 @@ class PeerNode:
                     file_id = meta["file_id"]
                     if file_id in self.active_receivers:
                         rx = self.active_receivers[file_id]
-                        rx.writeChunk(body)
-                        pct = (rx.bytes_received / rx.file_size) * 100.0 if rx.file_size > 0 else 100.0
-                        if self.on_file_progress:
-                            self.on_file_progress(rx.filename, rx.bytes_received, rx.file_size, pct, False)
+                        try:
+                            rx.writeChunk(body)
+                            pct = (rx.bytes_received / rx.file_size) * 100.0 if rx.file_size > 0 else 100.0
+                            if self.on_file_progress:
+                                self.on_file_progress(rx.filename, rx.bytes_received, rx.file_size, pct, False)
+                        except ValueError as ve:
+                            # Transfer exceeded declared size - abort to protect disk space
+                            rx.abort()
+                            self.active_receivers.pop(file_id, None)
+                            self.log.logError(f"File transfer '{rx.filename}' aborted: {ve}", action="FILE_OVERFLOW")
+                            if self.on_file_error:
+                                self.on_file_error(rx.filename, f"Transfer aborted: {ve}")
+                            sendFrame(sock, TYPE_FILE_REJECT, {"file_id": file_id, "reason": str(ve)}, write_lock=self.sock_write_lock)
 
                 elif msg_type == TYPE_FILE_COMPLETE:
                     file_id = meta["file_id"]
@@ -458,6 +490,9 @@ class PeerNode:
                     self._emitNotice(f"{sender} left the chat ({reason}).")
                     break
 
+        except (socket.timeout, TimeoutError):
+            self.log.logWarn(f"Connection with {peer_name} timed out", action="TIMEOUT")
+            self._emitNotice(f"Chat connection with {peer_name} timed out.")
         except Exception as e:
             self._emitNotice(f"Chat connection error with {peer_name}: {e}")
         finally:

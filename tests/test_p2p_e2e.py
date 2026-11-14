@@ -4,6 +4,7 @@
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -382,6 +383,158 @@ class TestLanChatP2P(unittest.TestCase):
         tui.printLine("Background notification")
         self.assertEqual("".join(tui._input_buffer), "hello")
         print("[E2E] TerminalUI buffering test PASSED!")
+
+    def test_frame_body_limit_enforced(self):
+        """Verify recvFrame rejects oversized frames exceeding MAX_BODY_SIZE."""
+        print("\n[E2E] Testing frame body length limit enforcement...")
+        import socket
+        import struct
+        from protocol.tcp_protocol import FRAME_MAGIC, HEADER_FORMAT, recvFrame
+
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind(("127.0.0.1", 0))
+        server_sock.listen(1)
+        port = server_sock.getsockname()[1]
+
+        client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_sock.connect(("127.0.0.1", port))
+        conn, _ = server_sock.accept()
+
+        try:
+            # Send a malicious header claiming 20 MB body length (MAX_BODY_SIZE is 16 MB)
+            bad_header = struct.pack(HEADER_FORMAT, FRAME_MAGIC, 0, 20 * 1024 * 1024)
+            client_sock.sendall(bad_header)
+
+            # Server receiving this frame should reject it and return None (or raise ValueError caught by recvFrame)
+            res = recvFrame(conn)
+            self.assertIsNone(res, "Oversized frame must be rejected and result in None")
+        finally:
+            conn.close()
+            client_sock.close()
+            server_sock.close()
+        print("[E2E] Frame body limit test PASSED!")
+
+    def test_oversized_file_propose_rejected(self):
+        """Verify PeerNode rejects file proposals exceeding max_file_size limit."""
+        print("\n[E2E] Testing oversized file propose rejection...")
+        self.alice.start()
+        self.bob.start()
+        time.sleep(1.2)
+
+        self.alice.connectToPeer("Bob")
+        time.sleep(0.5)
+
+        # Bob receives a proposal for a 200 MB file (limit is 100 MB)
+        from protocol.tcp_protocol import TYPE_FILE_PROPOSE, recvFrame, sendFrame
+        oversized_file_id = "test-oversized-file-123"
+        sendFrame(
+            self.alice.active_sock,
+            TYPE_FILE_PROPOSE,
+            {
+                "file_id": oversized_file_id,
+                "filename": "huge_movie.iso",
+                "file_size": 200 * 1024 * 1024,
+                "sha256": "fakehash",
+            },
+            write_lock=self.alice.sock_write_lock,
+        )
+
+        time.sleep(0.5)
+        # Bob should not have created any active incoming transfer
+        self.assertNotIn(oversized_file_id, self.bob.active_receivers)
+        print("[E2E] Oversized file propose rejection test PASSED!")
+
+    def test_chunk_overflow_aborts_transfer(self):
+        """Verify that sending more chunk bytes than declared file_size aborts the transfer."""
+        print("\n[E2E] Testing chunk overflow abort...")
+        self.alice.start()
+        self.bob.start()
+        time.sleep(1.2)
+
+        self.alice.connectToPeer("Bob")
+        time.sleep(0.5)
+
+        from protocol.tcp_protocol import TYPE_FILE_CHUNK, TYPE_FILE_PROPOSE, sendFrame
+        test_fid = "overflow-fid-999"
+        # Declare 100 bytes
+        sendFrame(
+            self.alice.active_sock,
+            TYPE_FILE_PROPOSE,
+            {
+                "file_id": test_fid,
+                "filename": "overflow_test.bin",
+                "file_size": 100,
+                "sha256": "dummyhash",
+            },
+            write_lock=self.alice.sock_write_lock,
+        )
+        time.sleep(0.3)
+        self.assertIn(test_fid, self.bob.active_receivers)
+
+        # Now send 500 bytes of chunks (exceeds declared 100 bytes)
+        sendFrame(
+            self.alice.active_sock,
+            TYPE_FILE_CHUNK,
+            {"file_id": test_fid, "offset": 0},
+            body=b"A" * 500,
+            write_lock=self.alice.sock_write_lock,
+        )
+        time.sleep(0.5)
+
+        # Receiver should have detected overflow, aborted, and cleaned up
+        self.assertNotIn(test_fid, self.bob.active_receivers)
+        print("[E2E] Chunk overflow abort test PASSED!")
+
+    def test_spoofed_beacon_and_goodbye_rejection(self):
+        """Verify that PeerTable rejects spoofed beacons and goodbye packets from different IPs."""
+        print("\n[E2E] Testing anti-spoofing in PeerTable...")
+        from peer.peer_table import PeerTable
+        table = PeerTable(timeout=10.0)
+
+        # Legitimate Alice registers from 192.168.1.100:7001
+        added, changed, peer = table.addOrUpdatePeer("Alice", "192.168.1.100", 7001, "online")
+        self.assertTrue(added)
+        self.assertEqual(peer.ip, "192.168.1.100")
+
+        # Attacker Eve from 192.168.1.200 attempts to hijack Alice's username
+        spoofed_added, spoofed_changed, spoofed_peer = table.addOrUpdatePeer("Alice", "192.168.1.200", 7001, "online")
+        self.assertFalse(spoofed_added)
+        self.assertFalse(spoofed_changed)
+        # Original Alice was not hijacked
+        self.assertEqual(table.getPeerByName("Alice").ip, "192.168.1.100")
+
+        # Attacker Eve attempts to evict Alice with a spoofed GOODBYE
+        evicted = table.removePeer("192.168.1.200", 7001, name="Alice")
+        self.assertIsNone(evicted, "Spoofed goodbye from different IP must not evict Alice")
+        self.assertIsNotNone(table.getPeerByName("Alice"), "Alice must still be present")
+
+        # Legitimate goodbye from 192.168.1.100 succeeds
+        legit_evicted = table.removePeer("192.168.1.100", 7001, name="Alice")
+        self.assertIsNotNone(legit_evicted)
+        self.assertIsNone(table.getPeerByName("Alice"))
+        print("[E2E] Anti-spoofing test PASSED!")
+
+    def test_terminal_escape_sanitization(self):
+        """Verify sanitizeTerminalText cleanly strips ANSI sequences and control characters."""
+        print("\n[E2E] Testing ANSI escape and terminal injection sanitization...")
+        from ui.cli_handler import sanitizeTerminalText
+
+        # ANSI screen clear + cursor reset + hidden cursor injection
+        malicious_input = "\x1b[2J\x1b[H\x1b[?25l[SYSTEM ALERT] Enter your password:\x1b[0m\r\n"
+        cleaned = sanitizeTerminalText(malicious_input)
+        self.assertNotIn("\x1b", cleaned)
+        self.assertNotIn("[2J", cleaned)
+        self.assertNotIn("\r", cleaned)
+        self.assertIn("[SYSTEM ALERT] Enter your password:", cleaned)
+
+        # Control characters like bell (\x07) and backspace (\x08)
+        bell_str = "Beep\x07\x08Boop"
+        self.assertEqual(sanitizeTerminalText(bell_str), "BeepBoop")
+
+        # Normal text with unicode preserved
+        normal_str = "Xin chào các bạn! Hello world 123"
+        self.assertEqual(sanitizeTerminalText(normal_str), normal_str)
+        print("[E2E] Terminal escape sanitization test PASSED!")
 
 if __name__ == "__main__":
     unittest.main()

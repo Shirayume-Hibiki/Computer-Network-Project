@@ -4,6 +4,7 @@
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -41,6 +42,13 @@ class PeerTable:
             name_key = name.lower()
             if name_key in self._peers:
                 peer = self._peers[name_key]
+                # Anti-spoofing check: If active, prevent a different remote IP from hijacking the username
+                is_active = not peer.isExpired(self.timeout, now)
+                is_different_remote_ip = (peer.ip != ip and not peer.ip.startswith("127.") and not ip.startswith("127."))
+                if is_active and is_different_remote_ip:
+                    # Reject beacon trying to hijack another active user's identity
+                    return False, False, peer
+
                 old_status = peer.status
                 peer.name = name
                 # Update IP: prefer non-loopback IP, but update if previous was loopback or current is non-loopback
@@ -64,8 +72,11 @@ class PeerTable:
             if name:
                 peer = self._peers.get(name.lower())
                 if peer:
-                    del self._peers[name.lower()]
-                    return peer
+                    # Authenticate eviction: ensure sender IP matches the peer's actual recorded IP
+                    if peer.ip == ip or peer.ip.startswith("127.") or ip.startswith("127."):
+                        del self._peers[name.lower()]
+                        return peer
+                    return None
             for k, peer in list(self._peers.items()):
                 if peer.ip == ip and peer.port == port:
                     del self._peers[k]

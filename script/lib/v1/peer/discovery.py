@@ -4,6 +4,7 @@
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -65,14 +66,14 @@ class UdpBroadcaster:
         self.sendGoodbye()
         self.running = False
         self._wake_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
         if self._socket:
             try:
                 self._socket.close()
             except Exception:
                 pass
             self._socket = None
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
 
     def setStatus(self, new_status: str) -> None:
         self.status = new_status
@@ -151,17 +152,19 @@ class UdpListener:
         self._prune_thread.start()
 
     def stop(self) -> None:
+        if not self.running:
+            return
         self.running = False
-        if self._recv_thread and self._recv_thread.is_alive():
-            self._recv_thread.join(timeout=1.0)
-        if self._prune_thread and self._prune_thread.is_alive():
-            self._prune_thread.join(timeout=1.0)
         if self._socket:
             try:
                 self._socket.close()
             except Exception:
                 pass
             self._socket = None
+        if self._recv_thread and self._recv_thread.is_alive():
+            self._recv_thread.join(timeout=0.5)
+        if self._prune_thread and self._prune_thread.is_alive():
+            self._prune_thread.join(timeout=0.5)
 
     def _listenLoop(self) -> None:
         while self.running and self._socket:

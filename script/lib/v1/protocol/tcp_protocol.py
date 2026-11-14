@@ -4,6 +4,7 @@
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -18,6 +19,10 @@ import time
 FRAME_MAGIC: bytes = b"LC"
 HEADER_FORMAT: str = "!2sHI"
 HEADER_SIZE: int = struct.calcsize(HEADER_FORMAT)  # 8 bytes
+
+# Security constraints on framing
+MAX_BODY_SIZE: int = 16 * 1024 * 1024  # 16 MB max frame payload limit
+MAX_META_SIZE: int = 65535
 
 # Message Types
 TYPE_HANDSHAKE: str = "HANDSHAKE"
@@ -73,13 +78,19 @@ def recvExact(sock: socket.socket, length: int) -> bytes:
         buffer.extend(chunk)
     return bytes(buffer)
 
-def recvFrame(sock: socket.socket) -> tuple[dict, bytes] | None:
+def recvFrame(sock: socket.socket, max_body_size: int = MAX_BODY_SIZE) -> tuple[dict, bytes] | None:
     try:
         raw_header = recvExact(sock, HEADER_SIZE)
         magic, meta_len, body_len = struct.unpack(HEADER_FORMAT, raw_header)
         
         if magic != FRAME_MAGIC:
             raise ValueError(f"Invalid frame magic: {magic}")
+
+        if meta_len > MAX_META_SIZE:
+            raise ValueError(f"Metadata length exceeds maximum limit ({meta_len} > {MAX_META_SIZE} bytes)")
+
+        if body_len > max_body_size:
+            raise ValueError(f"Body length exceeds maximum allowed limit ({body_len} > {max_body_size} bytes)")
         
         meta_bytes = recvExact(sock, meta_len) if meta_len > 0 else b"{}"
         metadata = json.loads(meta_bytes.decode("utf-8", errors="replace"))

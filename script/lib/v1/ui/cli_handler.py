@@ -4,16 +4,31 @@
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
 import os
+import re
 import sys
 import time
 
 from common_functions import loadUIConfig
 from peer.peer_node import PeerNode
 from ui.terminal import TerminalUI
+
+ANSI_ESCAPE_RE = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+def sanitizeTerminalText(text: str) -> str:
+    """
+    Strips ANSI escape sequences and non-printable control characters
+    (except standard newline \n and tab \t) to prevent terminal injection.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    cleaned = ANSI_ESCAPE_RE.sub('', text)
+    cleaned = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', cleaned)
+    return cleaned
 
 def formatProgressBar(percentage: float, width: int = 20) -> str:
     filled = int(width * (percentage / 100.0))
@@ -41,25 +56,33 @@ class CliHandler:
 
     def _handleIncomingMessage(self, sender: str, text: str) -> None:
         prefix = f"[{time.strftime('%H:%M:%S')}] " if self.show_timestamps else ""
-        self.ui.printLine(f"{prefix}<{sender}>: {text}")
+        safe_sender = sanitizeTerminalText(sender)
+        safe_text = sanitizeTerminalText(text)
+        self.ui.printLine(f"{prefix}<{safe_sender}>: {safe_text}")
 
     def _handleFileProgress(self, filename: str, done: int, total: int, pct: float, is_upload: bool) -> None:
         direction = "Upload" if is_upload else "Download"
         bar = formatProgressBar(pct, width=self.progress_width)
-        line = f"[{direction}] {filename} {bar} {pct:5.1f}% ({done}/{total} bytes)"
+        safe_fn = sanitizeTerminalText(filename)
+        line = f"[{direction}] {safe_fn} {bar} {pct:5.1f}% ({done}/{total} bytes)"
         self.ui.printLine(line)
 
     def _handleFileComplete(self, filename: str, path: str, is_upload: bool) -> None:
+        safe_fn = sanitizeTerminalText(filename)
+        safe_path = sanitizeTerminalText(path)
         if is_upload:
-            self.ui.printLine(f"[Transfer] File '{filename}' successfully sent!")
+            self.ui.printLine(f"[Transfer] File '{safe_fn}' successfully sent!")
         else:
-            self.ui.printLine(f"[Transfer] File '{filename}' successfully received and saved to: {path}")
+            self.ui.printLine(f"[Transfer] File '{safe_fn}' successfully received and saved to: {safe_path}")
 
     def _handleFileError(self, filename: str, err: str) -> None:
-        self.ui.printLine(f"[Transfer Error] {filename}: {err}")
+        safe_fn = sanitizeTerminalText(filename)
+        safe_err = sanitizeTerminalText(err)
+        self.ui.printLine(f"[Transfer Error] {safe_fn}: {safe_err}")
 
     def _handleNotice(self, msg: str) -> None:
-        self.ui.printLine(f"[*] {msg}")
+        safe_msg = sanitizeTerminalText(msg)
+        self.ui.printLine(f"[*] {safe_msg}")
 
     def displayHelp(self) -> None:
         help_text = (
@@ -95,7 +118,9 @@ class CliHandler:
             elapsed = int(now - peer.last_seen)
             last_seen_str = f"{elapsed}s ago"
             addr_str = f"{peer.ip}:{peer.port}"
-            lines.append(f"| {idx:<3} | {peer.name:<20} | {addr_str:<20} | {peer.status:<7} | {last_seen_str:<10} |")
+            safe_name = sanitizeTerminalText(peer.name)
+            safe_status = sanitizeTerminalText(peer.status)
+            lines.append(f"| {idx:<3} | {safe_name:<20} | {addr_str:<20} | {safe_status:<7} | {last_seen_str:<10} |")
         lines.append("+-----+----------------------+----------------------+---------+------------+")
         self.ui.printLine("\n".join(lines))
 
@@ -110,7 +135,8 @@ class CliHandler:
             try:
                 # Update prompt dynamically
                 if self.node.active_peer_name:
-                    self.ui.setPrompt(f"[{self.node.name} -> {self.node.active_peer_name}] > ")
+                    safe_peer = sanitizeTerminalText(self.node.active_peer_name)
+                    self.ui.setPrompt(f"[{self.node.name} -> {safe_peer}] > ")
                 else:
                     self.ui.setPrompt(f"[{self.node.name}] > ")
 
