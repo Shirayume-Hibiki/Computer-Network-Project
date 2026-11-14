@@ -347,60 +347,73 @@ class PeerNode:
         while self.running and self.tcp_server_sock:
             try:
                 conn, addr = self.tcp_server_sock.accept()
-                with self._session_lock:
-                    if self.active_sock is not None:
-                        # Reject concurrent chat connections if one is active
-                        try:
-                            sendFrame(conn, TYPE_HANDSHAKE_REJECT, {"sender": self.name, "reason": "Busy in another chat"})
-                            conn.close()
-                        except Exception:
-                            pass
-                        continue
-
-                # Read incoming handshake frame
-                try:
-                    conn.settimeout(5.0)
-                    req = recvFrame(conn)
-                    if not req or req[0].get("type") != TYPE_HANDSHAKE:
-                        conn.close()
-                        continue
-
-                    req_meta, _ = req
-                    sender_name = req_meta.get("sender", f"{addr[0]}:{addr[1]}")
-
-                    with self._session_lock:
-                        if self.active_sock is not None:
-                            sendFrame(conn, TYPE_HANDSHAKE_REJECT, {"sender": self.name, "reason": "Busy in another chat"})
-                            conn.close()
-                            continue
-
-                        # Acknowledge handshake
-                        sendFrame(conn, TYPE_HANDSHAKE_ACK, {"sender": self.name, "listen_port": self.tcp_port})
-                        conn.settimeout(1.0)
-                        conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-
-                        self.active_sock = conn
-                        self.active_peer_name = sender_name
-                        self.active_peer_addr = addr
-
-                    self._emitNotice(f"Incoming connection accepted from {sender_name} ({addr[0]}:{addr[1]}).")
-
-                    self._session_rx_thread = threading.Thread(
-                        target=self._connectionRxLoop, args=(conn, sender_name), daemon=True, name=f"TCP-Rx-{sender_name}"
-                    )
-                    self._session_rx_thread.start()
-
-                except (socket.timeout, Exception):
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-
+                # Offload handshake to background thread to prevent accept-queue DoS
+                handler = threading.Thread(
+                    target=self._handleIncomingConnection,
+                    args=(conn, addr),
+                    daemon=True,
+                    name=f"TCP-Handshake-{addr[0]}:{addr[1]}",
+                )
+                handler.start()
             except (socket.timeout, TimeoutError):
                 continue
             except Exception:
                 if not self.running:
                     break
+
+    def _handleIncomingConnection(self, conn: socket.socket, addr: tuple[str, int]) -> None:
+        with self._session_lock:
+            if self.active_sock is not None:
+                # Fast reject if already busy
+                try:
+                    sendFrame(conn, TYPE_HANDSHAKE_REJECT, {"sender": self.name, "reason": "Busy in another chat"})
+                    conn.close()
+                except Exception:
+                    pass
+                return
+
+        # Read incoming handshake frame with 5s timeout
+        try:
+            conn.settimeout(5.0)
+            req = recvFrame(conn)
+            if not req or not isinstance(req[0], dict) or req[0].get("type") != TYPE_HANDSHAKE:
+                conn.close()
+                return
+
+            req_meta, _ = req
+            sender_name = req_meta.get("sender")
+            if not isinstance(sender_name, str) or not sender_name.strip():
+                sender_name = f"{addr[0]}:{addr[1]}"
+            else:
+                sender_name = sender_name.strip()
+
+            with self._session_lock:
+                if self.active_sock is not None:
+                    sendFrame(conn, TYPE_HANDSHAKE_REJECT, {"sender": self.name, "reason": "Busy in another chat"})
+                    conn.close()
+                    return
+
+                # Acknowledge handshake
+                sendFrame(conn, TYPE_HANDSHAKE_ACK, {"sender": self.name, "listen_port": self.tcp_port})
+                conn.settimeout(1.0)
+                conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+                self.active_sock = conn
+                self.active_peer_name = sender_name
+                self.active_peer_addr = addr
+
+            self._emitNotice(f"Incoming connection accepted from {sender_name} ({addr[0]}:{addr[1]}).")
+
+            self._session_rx_thread = threading.Thread(
+                target=self._connectionRxLoop, args=(conn, sender_name), daemon=True, name=f"TCP-Rx-{sender_name}"
+            )
+            self._session_rx_thread.start()
+
+        except (socket.timeout, Exception):
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _connectionRxLoop(self, sock: socket.socket, default_peer_name: str) -> None:
         peer_name = default_peer_name
@@ -414,104 +427,120 @@ class PeerNode:
                 if not result:
                     break
                 meta, body = result
+                if not isinstance(meta, dict):
+                    continue
+
                 msg_type = meta.get("type", "")
                 sender = meta.get("sender", peer_name)
+                if not isinstance(sender, str):
+                    sender = peer_name
 
-                if msg_type == TYPE_CHAT:
-                    text = body.decode("utf-8", errors="replace")
-                    self.log.logServer(f"Received chat from {sender}: {text}", action="CHAT_RECV")
-                    if self.on_message:
-                        self.on_message(sender, text)
+                try:
+                    if msg_type == TYPE_CHAT:
+                        text = body.decode("utf-8", errors="replace")
+                        self.log.logServer(f"Received chat from {sender}: {text}", action="CHAT_RECV")
+                        if self.on_message:
+                            self.on_message(sender, text)
 
-                elif msg_type == TYPE_FILE_PROPOSE:
-                    file_id = meta["file_id"]
-                    filename = meta["filename"]
-                    file_size = meta["file_size"]
-                    expected_sha256 = meta["sha256"]
+                    elif msg_type == TYPE_FILE_PROPOSE:
+                        file_id = meta.get("file_id")
+                        filename = meta.get("filename")
+                        file_size = meta.get("file_size")
+                        expected_sha256 = meta.get("sha256")
 
-                    # Check file size limit
-                    if file_size > self.max_file_size or file_size < 0:
-                        reason = f"File size exceeds maximum allowed limit ({file_size} > {self.max_file_size} bytes)"
-                        self.log.logWarn(f"Rejected file '{filename}' from {sender}: {reason}", action="FILE_REJECT")
-                        sendFrame(sock, TYPE_FILE_REJECT, {"file_id": file_id, "reason": reason}, write_lock=self.sock_write_lock)
-                        self._emitNotice(f"Rejected file '{filename}' from {sender}: {reason}")
-                        continue
+                        if not (isinstance(file_id, str) and isinstance(filename, str) and isinstance(file_size, int) and isinstance(expected_sha256, str)):
+                            self.log.logWarn(f"Discarded malformed FILE_PROPOSE metadata from {sender}", action="MALFORMED_FRAME")
+                            continue
 
-                    # Check max concurrent incoming transfers limit
-                    if len(self.active_receivers) >= self.max_concurrent_downloads:
-                        reason = f"Max concurrent downloads limit reached ({self.max_concurrent_downloads})"
-                        self.log.logWarn(f"Rejected file '{filename}' from {sender}: {reason}", action="FILE_REJECT")
-                        sendFrame(sock, TYPE_FILE_REJECT, {"file_id": file_id, "reason": reason}, write_lock=self.sock_write_lock)
-                        self._emitNotice(f"Rejected file '{filename}' from {sender}: {reason}")
-                        continue
+                        # Check file size limit
+                        if file_size > self.max_file_size or file_size < 0:
+                            reason = f"File size exceeds maximum allowed limit ({file_size} > {self.max_file_size} bytes)"
+                            self.log.logWarn(f"Rejected file '{filename}' from {sender}: {reason}", action="FILE_REJECT")
+                            sendFrame(sock, TYPE_FILE_REJECT, {"file_id": file_id, "reason": reason}, write_lock=self.sock_write_lock)
+                            self._emitNotice(f"Rejected file '{filename}' from {sender}: {reason}")
+                            continue
 
-                    dest_path, file_handle = getUniqueDownloadHandle(self.downloads_dir, filename)
+                        # Check max concurrent incoming transfers limit
+                        if len(self.active_receivers) >= self.max_concurrent_downloads:
+                            reason = f"Max concurrent downloads limit reached ({self.max_concurrent_downloads})"
+                            self.log.logWarn(f"Rejected file '{filename}' from {sender}: {reason}", action="FILE_REJECT")
+                            sendFrame(sock, TYPE_FILE_REJECT, {"file_id": file_id, "reason": reason}, write_lock=self.sock_write_lock)
+                            self._emitNotice(f"Rejected file '{filename}' from {sender}: {reason}")
+                            continue
 
-                    self.log.logServer(f"Receiving file '{filename}' ({file_size} bytes) from {sender} -> {dest_path}", action="FILE_RECV")
-                    receiver = ActiveIncomingTransfer(
-                        file_id=file_id,
-                        filename=filename,
-                        file_size=file_size,
-                        expected_sha256=expected_sha256,
-                        dest_path=dest_path,
-                        file_handle=file_handle,
-                    )
-                    self.active_receivers[file_id] = receiver
-                    self._emitNotice(f"Receiving file '{filename}' ({file_size} bytes) from {sender} into {dest_path}...")
-                    # Automatically accept transfer using socket write lock
-                    sendFrame(sock, TYPE_FILE_ACCEPT, {"file_id": file_id, "offset": 0}, write_lock=self.sock_write_lock)
+                        dest_path, file_handle = getUniqueDownloadHandle(self.downloads_dir, filename)
 
-                elif msg_type == TYPE_FILE_ACCEPT:
-                    file_id = meta["file_id"]
-                    self.log.logClient(f"File transfer accepted by remote peer: {file_id}", action="FILE_ACCEPT")
-                    if file_id in self.active_senders:
-                        self.active_senders[file_id].notifyAccepted()
+                        self.log.logServer(f"Receiving file '{filename}' ({file_size} bytes) from {sender} -> {dest_path}", action="FILE_RECV")
+                        receiver = ActiveIncomingTransfer(
+                            file_id=file_id,
+                            filename=filename,
+                            file_size=file_size,
+                            expected_sha256=expected_sha256,
+                            dest_path=dest_path,
+                            file_handle=file_handle,
+                        )
+                        self.active_receivers[file_id] = receiver
+                        self._emitNotice(f"Receiving file '{filename}' ({file_size} bytes) from {sender} into {dest_path}...")
+                        # Automatically accept transfer using socket write lock
+                        sendFrame(sock, TYPE_FILE_ACCEPT, {"file_id": file_id, "offset": 0}, write_lock=self.sock_write_lock)
 
-                elif msg_type == TYPE_FILE_REJECT:
-                    file_id = meta["file_id"]
-                    reason = meta.get("reason", "")
-                    self.log.logWarn(f"File transfer rejected by remote peer: {reason}", action="FILE_REJECT")
-                    if file_id in self.active_senders:
-                        self.active_senders[file_id].notifyRejected(reason)
+                    elif msg_type == TYPE_FILE_ACCEPT:
+                        file_id = meta.get("file_id")
+                        if isinstance(file_id, str):
+                            self.log.logClient(f"File transfer accepted by remote peer: {file_id}", action="FILE_ACCEPT")
+                            if file_id in self.active_senders:
+                                self.active_senders[file_id].notifyAccepted()
 
-                elif msg_type == TYPE_FILE_CHUNK:
-                    file_id = meta["file_id"]
-                    if file_id in self.active_receivers:
-                        rx = self.active_receivers[file_id]
-                        try:
-                            rx.writeChunk(body)
-                            pct = (rx.bytes_received / rx.file_size) * 100.0 if rx.file_size > 0 else 100.0
-                            if self.on_file_progress:
-                                self.on_file_progress(rx.filename, rx.bytes_received, rx.file_size, pct, False)
-                        except ValueError as ve:
-                            # Transfer exceeded declared size - abort to protect disk space
-                            rx.abort()
-                            self.active_receivers.pop(file_id, None)
-                            self.log.logError(f"File transfer '{rx.filename}' aborted: {ve}", action="FILE_OVERFLOW")
-                            if self.on_file_error:
-                                self.on_file_error(rx.filename, f"Transfer aborted: {ve}")
-                            sendFrame(sock, TYPE_FILE_REJECT, {"file_id": file_id, "reason": str(ve)}, write_lock=self.sock_write_lock)
+                    elif msg_type == TYPE_FILE_REJECT:
+                        file_id = meta.get("file_id")
+                        reason = str(meta.get("reason", ""))
+                        if isinstance(file_id, str):
+                            self.log.logWarn(f"File transfer rejected by remote peer: {reason}", action="FILE_REJECT")
+                            if file_id in self.active_senders:
+                                self.active_senders[file_id].notifyRejected(reason)
 
-                elif msg_type == TYPE_FILE_COMPLETE:
-                    file_id = meta["file_id"]
-                    if file_id in self.active_receivers:
-                        rx = self.active_receivers.pop(file_id)
-                        complete_sha = meta.get("sha256")
-                        is_valid = rx.finish(complete_sha256=complete_sha)
-                        if is_valid:
-                            self.log.logServer(f"File '{rx.filename}' downloaded and verified (SHA-256 match)", action="FILE_COMPLETE")
-                            if self.on_file_complete:
-                                self.on_file_complete(rx.filename, rx.dest_path, False)
-                        else:
-                            rx.abort()  # Delete corrupted file on SHA-256 verification failure
-                            self.log.logError(f"File '{rx.filename}' failed SHA-256 / size verification, discarded", action="FILE_ERROR")
-                            if self.on_file_error:
-                                self.on_file_error(rx.filename, "SHA256 checksum or file size verification failed! Incomplete file discarded.")
+                    elif msg_type == TYPE_FILE_CHUNK:
+                        file_id = meta.get("file_id")
+                        if isinstance(file_id, str) and file_id in self.active_receivers:
+                            rx = self.active_receivers[file_id]
+                            try:
+                                rx.writeChunk(body)
+                                pct = (rx.bytes_received / rx.file_size) * 100.0 if rx.file_size > 0 else 100.0
+                                if self.on_file_progress:
+                                    self.on_file_progress(rx.filename, rx.bytes_received, rx.file_size, pct, False)
+                            except ValueError as ve:
+                                # Transfer exceeded declared size - abort to protect disk space
+                                rx.abort()
+                                self.active_receivers.pop(file_id, None)
+                                self.log.logError(f"File transfer '{rx.filename}' aborted: {ve}", action="FILE_OVERFLOW")
+                                if self.on_file_error:
+                                    self.on_file_error(rx.filename, f"Transfer aborted: {ve}")
+                                sendFrame(sock, TYPE_FILE_REJECT, {"file_id": file_id, "reason": str(ve)}, write_lock=self.sock_write_lock)
 
-                elif msg_type == TYPE_LEAVE:
-                    reason = meta.get("reason", "Disconnected")
-                    self._emitNotice(f"{sender} left the chat ({reason}).")
-                    break
+                    elif msg_type == TYPE_FILE_COMPLETE:
+                        file_id = meta.get("file_id")
+                        if isinstance(file_id, str) and file_id in self.active_receivers:
+                            rx = self.active_receivers.pop(file_id)
+                            complete_sha = meta.get("sha256")
+                            is_valid = rx.finish(complete_sha256=str(complete_sha) if complete_sha else None)
+                            if is_valid:
+                                self.log.logServer(f"File '{rx.filename}' downloaded and verified (SHA-256 match)", action="FILE_COMPLETE")
+                                if self.on_file_complete:
+                                    self.on_file_complete(rx.filename, rx.dest_path, False)
+                            else:
+                                rx.abort()  # Delete corrupted file on SHA-256 verification failure
+                                self.log.logError(f"File '{rx.filename}' failed SHA-256 / size verification, discarded", action="FILE_ERROR")
+                                if self.on_file_error:
+                                    self.on_file_error(rx.filename, "SHA256 checksum or file size verification failed! Incomplete file discarded.")
+
+                    elif msg_type == TYPE_LEAVE:
+                        reason = meta.get("reason", "Disconnected")
+                        self._emitNotice(f"{sender} left the chat ({reason}).")
+                        break
+
+                except Exception as frame_err:
+                    self.log.logWarn(f"Error handling frame ({msg_type}) from {sender}: {frame_err}", action="FRAME_ERROR")
+                    continue
 
         except (socket.timeout, TimeoutError):
             self.log.logWarn(f"Connection with {peer_name} timed out", action="TIMEOUT")

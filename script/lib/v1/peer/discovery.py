@@ -191,7 +191,7 @@ class UdpListener:
                             continue
 
                 if msg_type == MSG_GOODBYE:
-                    removed = self.peer_table.removePeer(sender_ip, peer_tcp_port, name=peer_name)
+                    removed = self.peer_table.removePeer(sender_ip, peer_tcp_port, name=peer_name, node_id=sender_node_id or "")
                     if removed and self.on_peer_leave:
                         self.on_peer_leave(removed)
                 elif msg_type in (MSG_BEACON, MSG_STATUS_UPDATE):
@@ -202,6 +202,7 @@ class UdpListener:
                         ip=sender_ip,
                         port=peer_tcp_port,
                         status=status,
+                        node_id=sender_node_id or "",
                     )
                     if is_new and self.on_peer_join:
                         self.on_peer_join(peer)

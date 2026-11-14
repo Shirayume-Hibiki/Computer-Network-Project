@@ -677,5 +677,90 @@ class TestLanChatP2P(unittest.TestCase):
         self.assertFalse(os.path.exists(test_path), "Corrupted/truncated file must be deleted on abort()")
         print("[E2E] Truncated file verification test PASSED!")
 
+    def test_malformed_metadata_does_not_crash_rx_loop(self):
+        """Verify malformed frame metadata is discarded without terminating the active chat session."""
+        print("\n[E2E] Testing malformed frame metadata handling...")
+        self.alice.start()
+        self.bob.start()
+        time.sleep(1.2)
+
+        self.alice.connectToPeer("Bob")
+        time.sleep(0.3)
+
+        from protocol.tcp_protocol import TYPE_FILE_PROPOSE, sendFrame
+        # Send malformed frame with string file_size and missing sha256
+        sendFrame(
+            self.alice.active_sock,
+            TYPE_FILE_PROPOSE,
+            {
+                "file_id": "bad-fid-1",
+                "filename": "test.txt",
+                "file_size": "not-an-integer",
+            },
+            write_lock=self.alice.sock_write_lock,
+        )
+        time.sleep(0.3)
+
+        # Send completely missing keys
+        sendFrame(
+            self.alice.active_sock,
+            TYPE_FILE_PROPOSE,
+            {"invalid_key": 123},
+            write_lock=self.alice.sock_write_lock,
+        )
+        time.sleep(0.3)
+
+        # Session should still be alive and accept normal chat!
+        self.alice.sendMessage("Chat survived malformed frames!")
+        time.sleep(0.4)
+        self.assertTrue(any("Chat survived malformed frames!" in m[1] for m in self.bob_msgs), "Chat must remain active")
+        print("[E2E] Malformed frame metadata handling test PASSED!")
+
+    def test_handshake_stall_does_not_block_accept_loop(self):
+        """Verify a stalling handshake connection does not block other peers from connecting."""
+        print("\n[E2E] Testing non-blocking accept loop under stalled handshake...")
+        import socket
+        self.alice.start()
+        self.bob.start()
+        time.sleep(1.2)
+
+        # Malicious peer connects but stalls sending handshake
+        staller = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        staller.connect(("127.0.0.1", self.bob.tcp_port))
+
+        # Alice should still be able to connect and chat without waiting 5 seconds
+        ok = self.alice.connectToPeer("Bob")
+        self.assertTrue(ok, "Alice must be able to connect despite stalling client")
+        staller.close()
+        print("[E2E] Non-blocking accept loop test PASSED!")
+
+    def test_anti_spoofing_loopback_and_node_id_enforcement(self):
+        """Verify a peer on 127.0.0.1 cannot be hijacked or evicted by an external IP or mismatched node_id."""
+        print("\n[E2E] Testing anti-spoofing against loopback hijacking...")
+        from peer.peer_table import PeerTable
+        table = PeerTable(timeout=10.0)
+
+        # Local Alice registers with node_id "alice-uuid-1" on 127.0.0.1
+        added, changed, peer = table.addOrUpdatePeer("Alice", "127.0.0.1", 7001, "online", node_id="alice-uuid-1")
+        self.assertTrue(added)
+        self.assertEqual(peer.node_id, "alice-uuid-1")
+
+        # Remote attacker Eve on 192.168.1.99 tries to hijack Alice with a different node_id
+        h_added, h_changed, h_peer = table.addOrUpdatePeer("Alice", "192.168.1.99", 7001, "online", node_id="eve-uuid-2")
+        self.assertFalse(h_added)
+        self.assertFalse(h_changed)
+        self.assertEqual(table.getPeerByName("Alice").ip, "127.0.0.1")
+
+        # Remote attacker Eve on 192.168.1.99 tries to evict Alice with a GOODBYE
+        evicted = table.removePeer("192.168.1.99", 7001, name="Alice", node_id="eve-uuid-2")
+        self.assertIsNone(evicted, "Eviction with mismatched node_id and different IP must fail")
+        self.assertIsNotNone(table.getPeerByName("Alice"))
+
+        # Legitimate eviction with matching node_id succeeds
+        legit_evicted = table.removePeer("127.0.0.1", 7001, name="Alice", node_id="alice-uuid-1")
+        self.assertIsNotNone(legit_evicted)
+        self.assertIsNone(table.getPeerByName("Alice"))
+        print("[E2E] Anti-spoofing loopback test PASSED!")
+
 if __name__ == "__main__":
     unittest.main()
