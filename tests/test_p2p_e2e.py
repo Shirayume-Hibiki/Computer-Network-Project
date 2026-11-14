@@ -584,5 +584,98 @@ class TestLanChatP2P(unittest.TestCase):
         self.assertIsNone(node.log._file_handle, "Log file handle must be closed after stop()")
         print("[E2E] Log handle cleanup on unstarted node test PASSED!")
 
+    def test_idle_chat_does_not_disconnect_on_timeout(self):
+        """Verify that idle chat sessions remain connected across socket timeout intervals."""
+        print("\n[E2E] Testing idle chat persistence across timeout intervals...")
+        self.alice.start()
+        self.bob.start()
+        time.sleep(1.2)
+
+        ok = self.alice.connectToPeer("Bob")
+        self.assertTrue(ok)
+        self.assertEqual(self.alice.active_peer_name, "Bob")
+
+        # Set aggressive 0.3s timeout on both sides to trigger multiple socket timeouts
+        self.alice.active_sock.settimeout(0.3)
+        self.bob.active_sock.settimeout(0.3)
+
+        # Wait 1.0s with zero messages sent (idle)
+        time.sleep(1.0)
+
+        # Sessions must still be active!
+        self.assertIsNotNone(self.alice.active_sock, "Alice must still be connected to Bob")
+        self.assertIsNotNone(self.bob.active_sock, "Bob must still be connected to Alice")
+        self.assertEqual(self.alice.active_peer_name, "Bob")
+
+        # Now send a message to ensure channel remains fully functional
+        self.alice.sendMessage("Still here!")
+        time.sleep(0.3)
+        self.assertTrue(any("Still here!" in m[1] for m in self.bob_msgs), "Bob should receive message after idle period")
+        print("[E2E] Idle chat persistence test PASSED!")
+
+    def test_file_sender_aborts_mid_stream_on_rejection(self):
+        """Verify FileSender immediately halts chunk streaming and calls on_error when rejected mid-stream."""
+        print("\n[E2E] Testing FileSender mid-stream rejection halt...")
+        import socket
+        from file_transfer.file_manager import FileSender
+
+        errors = []
+        completes = []
+
+        # Create dummy socket pair
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind(("127.0.0.1", 0))
+        server_sock.listen(1)
+        port = server_sock.getsockname()[1]
+        client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_sock.connect(("127.0.0.1", port))
+        conn, _ = server_sock.accept()
+
+        sender = FileSender(
+            sock=client_sock,
+            filepath=self.sample_file,
+            target_name="TestPeer",
+            on_error=lambda fn, err: errors.append(err),
+            on_complete=lambda fn, path: completes.append(path),
+        )
+        sender.start()
+        # Simulate accept
+        sender.notifyAccepted()
+        # Immediately simulate mid-stream reject
+        sender.notifyRejected("Receiver disk full")
+        sender.join(timeout=2.0)
+
+        conn.close()
+        client_sock.close()
+        server_sock.close()
+
+        self.assertEqual(len(completes), 0, "FileSender must NOT report complete on mid-stream rejection")
+        self.assertTrue(any("Receiver disk full" in e for e in errors), "FileSender must trigger on_error with reason")
+        print("[E2E] FileSender mid-stream rejection test PASSED!")
+
+    def test_truncated_file_fails_finish_size_verification(self):
+        """Verify ActiveIncomingTransfer.finish() rejects files where bytes_received < file_size."""
+        print("\n[E2E] Testing truncated file transfer verification failure...")
+        from file_transfer.file_manager import ActiveIncomingTransfer
+        test_path = os.path.join(self.test_dir, "truncated.dat")
+        handle = open(test_path, "wb")
+
+        # Declared size is 1000 bytes, but only write 500 bytes
+        rx = ActiveIncomingTransfer(
+            file_id="fid-trunc",
+            filename="truncated.dat",
+            file_size=1000,
+            expected_sha256="dummy",
+            dest_path=test_path,
+            file_handle=handle,
+        )
+        rx.writeChunk(b"A" * 500)
+        # finish should fail due to size mismatch
+        success = rx.finish()
+        self.assertFalse(success, "finish() must return False when bytes_received < file_size")
+        rx.abort()
+        self.assertFalse(os.path.exists(test_path), "Corrupted/truncated file must be deleted on abort()")
+        print("[E2E] Truncated file verification test PASSED!")
+
 if __name__ == "__main__":
     unittest.main()

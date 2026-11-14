@@ -251,7 +251,7 @@ class PeerNode:
 
             # Confirmed handshake
             verified_name = resp_meta.get("sender", target_peer.name)
-            sock.settimeout(self.session_timeout)
+            sock.settimeout(1.0)
 
             with self._session_lock:
                 self.active_sock = sock
@@ -276,6 +276,14 @@ class PeerNode:
     def leaveChat(self) -> None:
         with self._session_lock:
             if self.active_sock is not None:
+                # Abort any in-flight transfers on current session before closing socket
+                for f_id, rx in list(self.active_receivers.items()):
+                    rx.abort()
+                self.active_receivers.clear()
+                for f_id, tx in list(self.active_senders.items()):
+                    tx.notifyRejected("User left chat")
+                self.active_senders.clear()
+
                 try:
                     sendFrame(self.active_sock, TYPE_LEAVE, {"sender": self.name, "reason": "User left"}, write_lock=self.sock_write_lock)
                 except Exception:
@@ -368,7 +376,7 @@ class PeerNode:
 
                         # Acknowledge handshake
                         sendFrame(conn, TYPE_HANDSHAKE_ACK, {"sender": self.name, "listen_port": self.tcp_port})
-                        conn.settimeout(self.session_timeout)
+                        conn.settimeout(1.0)
                         conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
                         self.active_sock = conn
@@ -398,7 +406,11 @@ class PeerNode:
         peer_name = default_peer_name
         try:
             while self.running:
-                result = recvFrame(sock)
+                try:
+                    result = recvFrame(sock)
+                except (socket.timeout, TimeoutError):
+                    # Socket is idle: verify self.running and continue waiting
+                    continue
                 if not result:
                     break
                 meta, body = result
@@ -484,16 +496,17 @@ class PeerNode:
                     file_id = meta["file_id"]
                     if file_id in self.active_receivers:
                         rx = self.active_receivers.pop(file_id)
-                        is_valid = rx.finish()
+                        complete_sha = meta.get("sha256")
+                        is_valid = rx.finish(complete_sha256=complete_sha)
                         if is_valid:
                             self.log.logServer(f"File '{rx.filename}' downloaded and verified (SHA-256 match)", action="FILE_COMPLETE")
                             if self.on_file_complete:
                                 self.on_file_complete(rx.filename, rx.dest_path, False)
                         else:
                             rx.abort()  # Delete corrupted file on SHA-256 verification failure
-                            self.log.logError(f"File '{rx.filename}' failed SHA-256 verification, discarded", action="FILE_ERROR")
+                            self.log.logError(f"File '{rx.filename}' failed SHA-256 / size verification, discarded", action="FILE_ERROR")
                             if self.on_file_error:
-                                self.on_file_error(rx.filename, "SHA256 checksum verification failed! Corrupted file discarded.")
+                                self.on_file_error(rx.filename, "SHA256 checksum or file size verification failed! Incomplete file discarded.")
 
                 elif msg_type == TYPE_LEAVE:
                     reason = meta.get("reason", "Disconnected")
@@ -506,21 +519,22 @@ class PeerNode:
         except Exception as e:
             self._emitNotice(f"Chat connection error with {peer_name}: {e}")
         finally:
-            # Clean up and abort any in-flight incoming transfers to avoid file handle leaks
-            for f_id, rx in list(self.active_receivers.items()):
-                rx.abort()
-            self.active_receivers.clear()
-
-            # Abort any in-flight outgoing transfers
-            for f_id, tx in list(self.active_senders.items()):
-                tx.notifyRejected("Connection closed")
-            self.active_senders.clear()
-
             with self._session_lock:
                 if self.active_sock is sock:
                     self.active_sock = None
                     self.active_peer_name = None
                     self.active_peer_addr = None
+
+                    # Clean up and abort any in-flight incoming transfers for this session
+                    for f_id, rx in list(self.active_receivers.items()):
+                        rx.abort()
+                    self.active_receivers.clear()
+
+                    # Abort any in-flight outgoing transfers for this session
+                    for f_id, tx in list(self.active_senders.items()):
+                        tx.notifyRejected("Connection closed")
+                    self.active_senders.clear()
+
                     self._emitNotice(f"Chat session with {peer_name} closed.")
             try:
                 sock.close()

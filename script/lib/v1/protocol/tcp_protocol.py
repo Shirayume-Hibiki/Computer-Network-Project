@@ -72,8 +72,15 @@ def recvExact(sock: socket.socket, length: int) -> bytes:
     buffer = bytearray()
     while len(buffer) < length:
         remaining = length - len(buffer)
-        chunk = sock.recv(min(remaining, 65536))
+        try:
+            chunk = sock.recv(min(remaining, 65536))
+        except (socket.timeout, TimeoutError):
+            if len(buffer) == 0:
+                raise
+            raise TimeoutError("Socket timed out mid-frame reception.")
         if not chunk:
+            if len(buffer) == 0:
+                return b""
             raise ConnectionResetError("Connection closed unexpectedly while receiving data.")
         buffer.extend(chunk)
     return bytes(buffer)
@@ -81,6 +88,8 @@ def recvExact(sock: socket.socket, length: int) -> bytes:
 def recvFrame(sock: socket.socket, max_body_size: int = MAX_BODY_SIZE) -> tuple[dict, bytes] | None:
     try:
         raw_header = recvExact(sock, HEADER_SIZE)
+        if not raw_header:
+            return None
         magic, meta_len, body_len = struct.unpack(HEADER_FORMAT, raw_header)
         
         if magic != FRAME_MAGIC:
@@ -97,7 +106,9 @@ def recvFrame(sock: socket.socket, max_body_size: int = MAX_BODY_SIZE) -> tuple[
         
         body_bytes = recvExact(sock, body_len) if body_len > 0 else b""
         return metadata, body_bytes
-    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, socket.timeout):
+    except (socket.timeout, TimeoutError):
+        raise
+    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
         return None
     except Exception:
         return None

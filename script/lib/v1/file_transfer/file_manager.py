@@ -168,6 +168,10 @@ class FileSender(threading.Thread):
             with open(self.filepath, "rb") as f:
                 chunk_idx = 0
                 while bytes_sent < file_size:
+                    if self.rejected_event.is_set():
+                        if self.on_error:
+                            self.on_error(filename, f"Transfer rejected: {self.rejection_reason}")
+                        return
                     chunk = f.read(self.chunk_size)
                     if not chunk:
                         break
@@ -188,6 +192,11 @@ class FileSender(threading.Thread):
                     pct = (bytes_sent / file_size) * 100.0 if file_size > 0 else 100.0
                     if self.on_progress:
                         self.on_progress(filename, bytes_sent, file_size, pct)
+
+            if self.rejected_event.is_set():
+                if self.on_error:
+                    self.on_error(filename, f"Transfer rejected: {self.rejection_reason}")
+                return
 
             # Send FILE_COMPLETE
             sendFrame(
@@ -232,13 +241,18 @@ class ActiveIncomingTransfer:
             self.hasher.update(chunk)
             self.bytes_received += len(chunk)
 
-    def finish(self) -> bool:
+    def finish(self, complete_sha256: str | None = None) -> bool:
         if not self.is_closed:
             self.file_handle.flush()
             self.file_handle.close()
             self.is_closed = True
-        actual_sha256 = self.hasher.hexdigest()
-        return actual_sha256 == self.expected_sha256
+        # Verify size matches exactly (prevent truncated file transfers from succeeding)
+        if self.bytes_received != self.file_size:
+            return False
+        actual_sha256 = self.hasher.hexdigest().lower()
+        if complete_sha256 and complete_sha256.lower() != self.expected_sha256.lower():
+            return False
+        return actual_sha256 == self.expected_sha256.lower()
 
     def abort(self) -> None:
         if not self.is_closed:

@@ -4,6 +4,7 @@
 ║  Creation date:            12/11/26                  ║
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -138,11 +139,15 @@ class TerminalUI:
                 self._redrawPrompt()
 
             while True:
-                rlist, _, _ = select.select([sys.stdin], [], [], 0.02)
+                rlist, _, _ = select.select([fd], [], [], 0.02)
                 if not rlist:
                     continue
 
-                ch = sys.stdin.read(1)
+                raw = os.read(fd, 1)
+                if not raw:
+                    return "/quit"
+                ch = raw.decode("utf-8", errors="replace")
+
                 with self._lock:
                     if ch in ("\r", "\n"):
                         line = "".join(self._input_buffer)
@@ -165,8 +170,9 @@ class TerminalUI:
                         return "/quit"
 
                     elif ch == "\x1b":  # Escape sequence prefix
-                        if select.select([sys.stdin], [], [], 0.01)[0]:
-                            sys.stdin.read(2)
+                        # Consume remaining escape sequence bytes from raw fd
+                        while select.select([fd], [], [], 0.01)[0]:
+                            os.read(fd, 1)
                         continue
 
                     else:
