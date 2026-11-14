@@ -1,0 +1,193 @@
+'''
+╔══════════════════════════════════════════════════════╗
+║  Creator:                  Shirayume-Hibiki          ║
+║  Creation date:            12/11/26                  ║
+║  Edit dates / contributor:                           ║
+║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
+╚══════════════════════════════════════════════════════╝
+'''
+
+import os
+import re
+import sys
+import time
+
+from common_functions import loadUIConfig
+from peer.peer_node import PeerNode
+from ui.terminal import TerminalUI
+
+ANSI_ESCAPE_RE = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+def sanitizeTerminalText(text: str) -> str:
+    """
+    Strips ANSI escape sequences and non-printable control characters
+    (except standard newline \n and tab \t) to prevent terminal injection.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    cleaned = ANSI_ESCAPE_RE.sub('', text)
+    cleaned = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', cleaned)
+    return cleaned
+
+def formatProgressBar(percentage: float, width: int = 20) -> str:
+    filled = int(width * (percentage / 100.0))
+    filled = max(0, min(width, filled))
+    bar = "=" * filled + (">" if filled < width else "")
+    return f"[{bar.ljust(width)}]"
+
+class CliHandler:
+    def __init__(self, node: PeerNode):
+        self.node = node
+        ui_cfg = loadUIConfig()
+        self.progress_width = int(ui_cfg.get("progress_bar_width", 20))
+        self.show_timestamps = bool(ui_cfg.get("show_timestamps", True))
+        ansi_enabled = bool(ui_cfg.get("ansi_enabled", True))
+
+        self.ui = TerminalUI(prompt=f"[{node.name}] > ", ansi_enabled=ansi_enabled)
+        self._wireCallbacks()
+
+    def _wireCallbacks(self) -> None:
+        self.node.on_message = self._handleIncomingMessage
+        self.node.on_file_progress = self._handleFileProgress
+        self.node.on_file_complete = self._handleFileComplete
+        self.node.on_file_error = self._handleFileError
+        self.node.on_notice = self._handleNotice
+
+    def _handleIncomingMessage(self, sender: str, text: str) -> None:
+        prefix = f"[{time.strftime('%H:%M:%S')}] " if self.show_timestamps else ""
+        safe_sender = sanitizeTerminalText(sender)
+        safe_text = sanitizeTerminalText(text)
+        self.ui.printLine(f"{prefix}<{safe_sender}>: {safe_text}")
+
+    def _handleFileProgress(self, filename: str, done: int, total: int, pct: float, is_upload: bool) -> None:
+        direction = "Upload" if is_upload else "Download"
+        bar = formatProgressBar(pct, width=self.progress_width)
+        safe_fn = sanitizeTerminalText(filename)
+        line = f"[{direction}] {safe_fn} {bar} {pct:5.1f}% ({done}/{total} bytes)"
+        self.ui.printLine(line)
+
+    def _handleFileComplete(self, filename: str, path: str, is_upload: bool) -> None:
+        safe_fn = sanitizeTerminalText(filename)
+        safe_path = sanitizeTerminalText(path)
+        if is_upload:
+            self.ui.printLine(f"[Transfer] File '{safe_fn}' successfully sent!")
+        else:
+            self.ui.printLine(f"[Transfer] File '{safe_fn}' successfully received and saved to: {safe_path}")
+
+    def _handleFileError(self, filename: str, err: str) -> None:
+        safe_fn = sanitizeTerminalText(filename)
+        safe_err = sanitizeTerminalText(err)
+        self.ui.printLine(f"[Transfer Error] {safe_fn}: {safe_err}")
+
+    def _handleNotice(self, msg: str) -> None:
+        safe_msg = sanitizeTerminalText(msg)
+        self.ui.printLine(f"[*] {safe_msg}")
+
+    def displayHelp(self) -> None:
+        help_text = (
+            "\n"
+            "+-------------------------------------------------------------------------+\n"
+            "|                          AVAILABLE LAN CHAT COMMANDS                    |\n"
+            "+-------------------------------------------------------------------------+\n"
+            "| /list                   : Show all active peers on the LAN              |\n"
+            "| /chat <username|index>  : Connect and start a 1-to-1 chat session       |\n"
+            "| <message text>          : Send text message to the currently active peer|\n"
+            "| /send <filepath>        : Send a file to the currently active peer      |\n"
+            "| /leave                  : Disconnect from the current chat session      |\n"
+            "| /status <online|away>   : Change your presence status                   |\n"
+            "| /help                   : Display this command reference                |\n"
+            "| /quit                   : Disconnect, broadcast goodbye, and exit       |\n"
+            "+-------------------------------------------------------------------------+"
+        )
+        self.ui.printLine(help_text)
+
+    def displayPeerList(self) -> None:
+        peers = self.node.peer_table.getActivePeers()
+        if not peers:
+            self.ui.printLine("[*] No active peers found on LAN yet. Waiting for beacons...")
+            return
+
+        now = time.time()
+        lines = [
+            "\n+-----+----------------------+----------------------+---------+------------+",
+            "| #   | Username             | IP Address : Port    | Status  | Last Seen  |",
+            "+-----+----------------------+----------------------+---------+------------+",
+        ]
+        for idx, peer in enumerate(peers, start=1):
+            elapsed = int(now - peer.last_seen)
+            last_seen_str = f"{elapsed}s ago"
+            addr_str = f"{peer.ip}:{peer.port}"
+            safe_name = sanitizeTerminalText(peer.name)
+            safe_status = sanitizeTerminalText(peer.status)
+            lines.append(f"| {idx:<3} | {safe_name:<20} | {addr_str:<20} | {safe_status:<7} | {last_seen_str:<10} |")
+        lines.append("+-----+----------------------+----------------------+---------+------------+")
+        self.ui.printLine("\n".join(lines))
+
+    def run(self) -> None:
+        self.ui.printLine(f"\n=======================================================")
+        self.ui.printLine(f"  LAN Chat P2P Node Started")
+        self.ui.printLine(f"  User: {self.node.name} | TCP Port: {self.node.tcp_port} | Status: {self.node.status}")
+        self.ui.printLine(f"  Type /help for available commands or /list to see peers.")
+        self.ui.printLine(f"=======================================================\n")
+
+        while self.node.running:
+            try:
+                # Update prompt dynamically
+                if self.node.active_peer_name:
+                    safe_peer = sanitizeTerminalText(self.node.active_peer_name)
+                    self.ui.setPrompt(f"[{self.node.name} -> {safe_peer}] > ")
+                else:
+                    self.ui.setPrompt(f"[{self.node.name}] > ")
+
+                cmd_line = self.ui.readLine()
+                if not cmd_line:
+                    continue
+
+                if cmd_line.startswith("/"):
+                    parts = cmd_line.split(maxsplit=1)
+                    cmd = parts[0].lower()
+                    arg = parts[1].strip() if len(parts) > 1 else ""
+
+                    if cmd == "/quit":
+                        self.ui.printLine("[*] Exiting LAN Chat...")
+                        break
+                    elif cmd == "/help":
+                        self.displayHelp()
+                    elif cmd == "/list":
+                        self.displayPeerList()
+                    elif cmd == "/chat":
+                        if not arg:
+                            self.ui.printLine("Usage: /chat <username|index>")
+                        else:
+                            self.node.connectToPeer(arg)
+                    elif cmd == "/leave":
+                        self.node.leaveChat()
+                    elif cmd == "/send":
+                        if not arg:
+                            self.ui.printLine("Usage: /send <filepath>")
+                        else:
+                            self.node.sendFile(arg)
+                    elif cmd == "/status":
+                        if arg in ("online", "away"):
+                            self.node.setStatus(arg)
+                            self.ui.printLine(f"[*] Status set to {arg}.")
+                        else:
+                            self.ui.printLine("Usage: /status <online|away>")
+                    else:
+                        self.ui.printLine(f"Unknown command '{cmd}'. Type /help for assistance.")
+                else:
+                    # Regular chat message
+                    if self.node.active_sock:
+                        self.node.sendMessage(cmd_line)
+                    else:
+                        self.ui.printLine("[!] Not in a chat session. Use /chat <username|index> to connect, or /list to find peers.")
+
+            except (KeyboardInterrupt, EOFError):
+                break
+            except Exception as e:
+                self.ui.printLine(f"[!] Error: {e}")
+
+        # Shutdown node
+        self.node.stop()
+        self.ui.printLine("[*] Goodbye!")
