@@ -536,5 +536,53 @@ class TestLanChatP2P(unittest.TestCase):
         self.assertEqual(sanitizeTerminalText(normal_str), normal_str)
         print("[E2E] Terminal escape sanitization test PASSED!")
 
+    def test_cn_logger_reentrant_init_on_write(self):
+        """Verify CNLogger.writeLog() does not deadlock when _file_handle is None."""
+        print("\n[E2E] Testing CNLogger reentrant writeLog without deadlock...")
+        from cn_logging import CNLogger
+        logger = CNLogger(instancepfx="test_reentrancy")
+        self.assertIsNone(logger._file_handle)
+
+        # Call writeLog directly without calling initLogger first
+        logger.writeLog("TEST", "ACTION", "Testing deadlock prevention")
+        self.assertIsNotNone(logger._file_handle)
+        logger.close()
+        self.assertIsNone(logger._file_handle)
+
+        # Calling writeLog again after close should re-init without deadlock
+        logger.writeLog("TEST", "ACTION", "Testing write after close")
+        self.assertIsNotNone(logger._file_handle)
+        logger.close()
+        print("[E2E] CNLogger reentrant writeLog test PASSED!")
+
+    def test_peer_node_stop_releases_tcp_listen_port(self):
+        """Verify PeerNode.stop() releases TCP listen port immediately."""
+        print("\n[E2E] Testing immediate TCP listen port release on stop()...")
+        node1 = PeerNode(name="Releaser1", tcp_port=7088, discovery_port=9999)
+        node1.start()
+        time.sleep(0.3)
+        self.assertTrue(node1.running)
+
+        node1.stop()
+        # Immediately start a second node on the exact same port
+        node2 = PeerNode(name="Releaser2", tcp_port=7088, discovery_port=9999)
+        try:
+            node2.start()
+            self.assertEqual(node2.tcp_port, 7088)
+        finally:
+            node2.stop()
+        print("[E2E] Immediate TCP port release test PASSED!")
+
+    def test_peer_node_stop_before_start_closes_log_handle(self):
+        """Verify PeerNode.stop() closes log file handle even if start() was never called."""
+        print("\n[E2E] Testing log handle cleanup when stop() called before start()...")
+        node = PeerNode(name="Unstarted", tcp_port=7089, discovery_port=9999)
+        self.assertFalse(node.running)
+        self.assertIsNotNone(node.log._file_handle)
+
+        node.stop()
+        self.assertIsNone(node.log._file_handle, "Log file handle must be closed after stop()")
+        print("[E2E] Log handle cleanup on unstarted node test PASSED!")
+
 if __name__ == "__main__":
     unittest.main()

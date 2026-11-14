@@ -162,6 +162,7 @@ class PeerNode:
         self.tcp_server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.tcp_server_sock.bind(("", self.tcp_port))
         self.tcp_server_sock.listen(5)
+        self.tcp_server_sock.settimeout(0.5)
         # If dynamic port (0) was requested, update actual port
         self.tcp_port = self.tcp_server_sock.getsockname()[1]
         self.broadcaster.tcp_port = self.tcp_port
@@ -176,6 +177,7 @@ class PeerNode:
 
     def stop(self) -> None:
         if not self.running:
+            self.log.close()
             return
         self.running = False
         self.log.logSystem(f"P2P Node '{self.name}' shutting down.", action="SHUTDOWN")
@@ -190,10 +192,16 @@ class PeerNode:
         # Close TCP Server socket
         if self.tcp_server_sock:
             try:
+                self.tcp_server_sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
                 self.tcp_server_sock.close()
             except Exception:
                 pass
             self.tcp_server_sock = None
+        if self._server_thread and self._server_thread.is_alive():
+            self._server_thread.join(timeout=0.5)
         self.log.close()
 
     def setStatus(self, status: str) -> None:
@@ -380,6 +388,8 @@ class PeerNode:
                     except Exception:
                         pass
 
+            except (socket.timeout, TimeoutError):
+                continue
             except Exception:
                 if not self.running:
                     break

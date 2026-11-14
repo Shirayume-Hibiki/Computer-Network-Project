@@ -5,6 +5,7 @@
 ║  Edit dates / contributor:                           ║
 ║  03/11/26 diamboy                                    ║
 ║  13/11/26 Shirayume-Hibiki                           ║
+║  14/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -29,7 +30,7 @@ def loadLogConfig(configpath: str = LOG_CONFIG_PATH) -> dict:
     return {}
 
 class CNLogger:
-    _lock = threading.Lock()
+    _lock = threading.RLock()
 
     def __init__(self, instancepfx: str = "session", configpath: str = LOG_CONFIG_PATH):
         # Sanitize instancepfx to prevent invalid characters or path traversal
