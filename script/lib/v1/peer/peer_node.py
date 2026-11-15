@@ -5,6 +5,7 @@
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
 ║  14/11/26 Shirayume-Hibiki                           ║
+║  15/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -52,6 +53,7 @@ class PeerNode:
         on_file_complete: Callable[[str, str, bool], None] | None = None,
         on_file_error: Callable[[str, str], None] | None = None,
         on_notice: Callable[[str], None] | None = None,
+        log_dir: str | None = None,
     ):
         config = loadLanChatConfig()
         self.name = name
@@ -68,7 +70,7 @@ class PeerNode:
         self.session_timeout = float(config.get("session_timeout", 60.0))
         self.node_id = str(uuid.uuid4())
 
-        self.log = log(instancepfx=f"peer_{self.name.lower()}")
+        self.log = log(instancepfx=f"peer_{self.name.lower()}", logdir=log_dir)
         self.log.initLogger()
         self.log.logSystem(f"P2P Node initiated for '{self.name}'. TCP Port: {self.tcp_port}, Discovery: {self.discovery_port}", action="INIT")
 
@@ -178,6 +180,13 @@ class PeerNode:
     def stop(self) -> None:
         if not self.running:
             self.log.close()
+            # If the node was never started, clean up initial unstarted log file
+            # so aborted/unstarted instances do not clutter the logs directory
+            if self.log.filepath and os.path.isfile(self.log.filepath):
+                try:
+                    os.remove(self.log.filepath)
+                except Exception:
+                    pass
             return
         self.running = False
         self.log.logSystem(f"P2P Node '{self.name}' shutting down.", action="SHUTDOWN")

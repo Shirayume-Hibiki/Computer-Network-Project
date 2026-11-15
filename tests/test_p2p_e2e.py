@@ -5,6 +5,7 @@
 ║  Edit dates / contributor:                           ║
 ║  13/11/26 Shirayume-Hibiki                           ║
 ║  14/11/26 Shirayume-Hibiki                           ║
+║  15/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -24,6 +25,8 @@ class TestLanChatP2P(unittest.TestCase):
     def setUp(self):
         self.test_dir = os.path.join(PROJECT_ROOT, "scratch_e2e_test")
         os.makedirs(self.test_dir, exist_ok=True)
+        self.test_log_dir = os.path.join(self.test_dir, "logs")
+        os.makedirs(self.test_log_dir, exist_ok=True)
         self.alice_downloads = os.path.join(self.test_dir, "alice_dl")
         self.bob_downloads = os.path.join(self.test_dir, "bob_dl")
 
@@ -45,6 +48,7 @@ class TestLanChatP2P(unittest.TestCase):
             downloads_dir=self.alice_downloads,
             on_message=lambda s, m: self.alice_msgs.append((s, m)),
             on_notice=lambda m: self.alice_notices.append(m),
+            log_dir=self.test_log_dir,
         )
         self.bob = PeerNode(
             name="Bob",
@@ -54,6 +58,7 @@ class TestLanChatP2P(unittest.TestCase):
             on_message=lambda s, m: self.bob_msgs.append((s, m)),
             on_file_complete=lambda fn, p, is_up: self.bob_files.append((fn, p)),
             on_notice=lambda m: self.bob_notices.append(m),
+            log_dir=self.test_log_dir,
         )
 
     def tearDown(self):
@@ -143,7 +148,7 @@ class TestLanChatP2P(unittest.TestCase):
         self.bob.start()
         time.sleep(1.2)
 
-        zack = PeerNode(name="Zack", tcp_port=7003, discovery_port=9999, downloads_dir=self.test_dir)
+        zack = PeerNode(name="Zack", tcp_port=7003, discovery_port=9999, downloads_dir=self.test_dir, log_dir=self.test_log_dir)
         zack.start()
         time.sleep(1.2)
 
@@ -166,7 +171,7 @@ class TestLanChatP2P(unittest.TestCase):
         print("\n[E2E] Testing multi-peer identity attribution...")
         self.bob.start()
 
-        zack = PeerNode(name="Zack", tcp_port=7003, discovery_port=9999, downloads_dir=self.test_dir)
+        zack = PeerNode(name="Zack", tcp_port=7003, discovery_port=9999, downloads_dir=self.test_dir, log_dir=self.test_log_dir)
         zack.start()
 
         # Add Alice to Bob's peer table so Alice is alphabetically first at same IP (127.0.0.1)
@@ -540,7 +545,7 @@ class TestLanChatP2P(unittest.TestCase):
         """Verify CNLogger.writeLog() does not deadlock when _file_handle is None."""
         print("\n[E2E] Testing CNLogger reentrant writeLog without deadlock...")
         from cn_logging import CNLogger
-        logger = CNLogger(instancepfx="test_reentrancy")
+        logger = CNLogger(instancepfx="test_reentrancy", logdir=self.test_log_dir)
         self.assertIsNone(logger._file_handle)
 
         # Call writeLog directly without calling initLogger first
@@ -558,14 +563,14 @@ class TestLanChatP2P(unittest.TestCase):
     def test_peer_node_stop_releases_tcp_listen_port(self):
         """Verify PeerNode.stop() releases TCP listen port immediately."""
         print("\n[E2E] Testing immediate TCP listen port release on stop()...")
-        node1 = PeerNode(name="Releaser1", tcp_port=7088, discovery_port=9999)
+        node1 = PeerNode(name="Releaser1", tcp_port=7088, discovery_port=9999, log_dir=self.test_log_dir)
         node1.start()
         time.sleep(0.3)
         self.assertTrue(node1.running)
 
         node1.stop()
         # Immediately start a second node on the exact same port
-        node2 = PeerNode(name="Releaser2", tcp_port=7088, discovery_port=9999)
+        node2 = PeerNode(name="Releaser2", tcp_port=7088, discovery_port=9999, log_dir=self.test_log_dir)
         try:
             node2.start()
             self.assertEqual(node2.tcp_port, 7088)
@@ -574,14 +579,17 @@ class TestLanChatP2P(unittest.TestCase):
         print("[E2E] Immediate TCP port release test PASSED!")
 
     def test_peer_node_stop_before_start_closes_log_handle(self):
-        """Verify PeerNode.stop() closes log file handle even if start() was never called."""
+        """Verify PeerNode.stop() closes log file handle and cleans up log if start() was never called."""
         print("\n[E2E] Testing log handle cleanup when stop() called before start()...")
-        node = PeerNode(name="Unstarted", tcp_port=7089, discovery_port=9999)
+        node = PeerNode(name="Unstarted", tcp_port=7089, discovery_port=9999, log_dir=self.test_log_dir)
         self.assertFalse(node.running)
         self.assertIsNotNone(node.log._file_handle)
+        unstarted_log_path = node.log.filepath
+        self.assertTrue(os.path.isfile(unstarted_log_path))
 
         node.stop()
         self.assertIsNone(node.log._file_handle, "Log file handle must be closed after stop()")
+        self.assertFalse(os.path.isfile(unstarted_log_path), "Unstarted log file should be cleaned up on stop()")
         print("[E2E] Log handle cleanup on unstarted node test PASSED!")
 
     def test_idle_chat_does_not_disconnect_on_timeout(self):
