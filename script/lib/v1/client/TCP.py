@@ -5,6 +5,7 @@
 ║  Edit dates / contributor:                           ║
 ║  24/10/26 Shirayume_Hibiki                           ║
 ║  03/11/26 Shirayume_Hibiki                           ║
+║  13/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -55,7 +56,7 @@ class ClientTCP:
                     discsockets.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                     discsockets.bind(("", self.discoveryport))
                     discsockets.settimeout(TIMEOUT)
-                    data, _ = discsockets.recvfrom(BUFFER_SIZE)
+                    data, addr = discsockets.recvfrom(BUFFER_SIZE)
                     if data:
                         decoded = data.decode("utf-8", errors="ignore").strip().rstrip(".")
                         # Format expected: "Server's TCP socket is listening on {host}:{port}"
@@ -63,7 +64,14 @@ class ClientTCP:
                         if ":" in target:
                             hostpart, portpart = target.rsplit(":", 1)
                             if portpart.isdigit():
-                                self.host = hostpart
+                                sender_ip = addr[0]
+                                # Prefer sender IP if broadcast advertised loopback/wildcard across LAN
+                                if hostpart in ("127.0.0.1", "0.0.0.0", "localhost") and not sender_ip.startswith("127."):
+                                    self.host = sender_ip
+                                elif hostpart in ("0.0.0.0", ""):
+                                    self.host = sender_ip
+                                else:
+                                    self.host = hostpart
                                 self.port = int(portpart)
                                 self.log.logClient(f"Discovered TCP server address: {self.host}:{self.port}.", action = "DISCOVERY", console = True)
                                 return self.host, self.port
