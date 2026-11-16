@@ -24,6 +24,8 @@ import scapy.all as scapy
 from internal_libs.packet_parser import Header
 ```
 
+`sys.path.append` or similar search path insertion hacks are banned. Imports shall be made relative to the project root.
+
 ---
 
 ## Naming Conventions
