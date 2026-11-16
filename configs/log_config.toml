@@ -1,3 +1,0 @@
-[logging]
-log_dir = "logs"
-time_format = "%d/%m/%Y ~ %H:%M:%S"
