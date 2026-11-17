@@ -20,4 +20,5 @@ Thumbs.db
 
 # Editor-specific files
 *.sw[g-p]
+*~
 .vscode/
