@@ -17,3 +17,7 @@ ENV/
 # Operating System files
 .DS_Store
 Thumbs.db
+
+# Editor-specific files
+*.sw[g-p]
+.vscode/
