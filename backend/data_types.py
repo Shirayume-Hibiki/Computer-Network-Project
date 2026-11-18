@@ -3,6 +3,7 @@
 ║  Creator:                  diamboy                   ║
 ║  Creation date:            17/11/26                  ║
 ║  Edit dates / contributor:                           ║
+║  18/11/26 diamboy                                    ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 class LogLevel(IntEnum):
     DEBUG = 0
@@ -54,7 +56,7 @@ class PeerInfo:
 
 @dataclass(frozen=True)
 class TransferInfo:
-    transfer_id: str    # Sent along with every file transfer chunk for IDing.
+    transfer_id: UUID   # Sent along with every file transfer chunk for IDing.
     addr: PeerAddress   # Peer's listening address.
     name: str           # Peer's name.
     filename: str       # Filename of the file being sent or received.
@@ -62,7 +64,7 @@ class TransferInfo:
     direction: Literal["upload", "download"]
     bytes_transferred: int
     bytes_total: int    # Expected total size.
-    # Final path on disk once finished. Can only populated if downloading.
+    # Final path on disk once finished. Only populated if downloading.
     # None while transfer is active or if the transfer failed.
     saved_path: Path | None
     error: str | None   # Human-readable error.
@@ -77,7 +79,6 @@ class BackendError(Exception):
 class PeerOnline:
     peer: PeerInfo
 
-# Fired when peer's address or status changes.
 @dataclass(frozen=True)
 class PeerChanged:
     peer: PeerInfo
