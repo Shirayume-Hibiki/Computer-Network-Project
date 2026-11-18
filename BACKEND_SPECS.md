@@ -173,7 +173,7 @@ The backend should *at least* trim any status received from other connections to
 
 ## TCP
 
-Accept multiple peers. Why do I have to say this? Look at the assignment? Look at `refactor/all_that_mattered script/lib/v1/peer/peer_node.py:375?` Well Mochi-tan thinks you just didn't tell your Gemini 3.8 Flash-san to follow the requirements more carefully this time!! (╥ ᴗ ╥)
+Accept multiple peers. Why do I have to say this? Look at the assignment? Look at `refactor/all_that_mattered script/lib/v1/peer/peer_node.py:375?` Well Mochi-tan thinks you just didn't tell your Gemini 3.8 Flash-san to follow the requirements more carefully!! (╥ ᴗ ╥)
 
 If two peers connect at the same time, resolve the duplication cleanly by a tiebreaking rule (Mochi-tan proposes... we compare `instance_id`, and the peer with the lower `instance_id` will keep its outgoing connection! Conversely, the peer with the higher `instance_id` will keep its incoming connection! ദ്ദി ˉ͈̀꒳ˉ͈́ ) Don't emit a `PeerDisconnected` for the closed duplicate connection. And since this is within "expect behavior," don't raise any errors.
 
