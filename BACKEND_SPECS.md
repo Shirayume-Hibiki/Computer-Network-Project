@@ -37,7 +37,7 @@ User-facing messages should go through the event system instead of the log funct
 - `get_peers() -> list[PeerInfo]`: Returns an **unordered** list of the current discovered peers. Must not block.
 - `set_status(status: str) -> None`: Set the user's status and immediately broadcasts it. Must preserve custom statuses like `🍡🍡mgmg`. Must not block.
 - `connect(addr: PeerAddress) -> None`: Opens TCP connection to the address, and exchanges a hello if not already connected. Emit a `PeerConnected` event once done. Is a no-op if socket is already connected. Raise a `BackendError` if not reachable. May block up to `config.connect_timeout` seconds (this is the total budget of the function).
-- `disconnect(addr: PeerAddress) -> None`: Sends a leave (but don't block waiting on a dead peer) and shutdown only the address's socket. Emit a `PeerDisconnected` event once done. Abort any active file transfers on the socket. Is a no-op if socket is already closed. Must not block.
+- `disconnect(addr: PeerAddress) -> None`: Sends a leave (but don't block waiting on a dead peer) and shutdown + close only the address's socket. Emit a `PeerDisconnected` event once done. Abort any active file transfers on the socket. Is a no-op if socket is already closed. Must not block.
 - `send_message(addr: PeerAddress, message: str) -> None`: Sends a chat message to the address. Raise `BackendError` if not connected. If the socket broke before or during the sending, tear down the socket cleanly before raising `BackendError`. Must not block.
 - `send_file(addr: PeerAddress, filepath: str | Path) -> UUID`: Sends a file to the address. Raise `BackendError` if not connected or if the path points to something that's not a file. Return the `transfer_id`. Must not block.
 
@@ -102,6 +102,8 @@ The backend should generate an `instance_id` on a `start()` call, to be used for
 
 When broadcasting to the addresses given, check for errors in **each address** and **ignore** them. If you do exception-handling around the whole loop, you will not send your presence message to all available addresses, and you will stop early at the first error. So, ignore errors per address. (Mochi-tan learned that stopping at "what you should do" is better than "what you shouldn't do!" Words are cool, aren't they? ⋆˚☆˖°⋆｡° ✮˖ ࣪ ⊹⋆.˚)
 
+Remember to enable `SO_BROADCAST` on broadcast sockets.
+
 Methods involving TCP sockets may be run on many threads, so each socket should hold a mutex (`threading.Lock`) when sending data. The mutex should only be acquired when sending one complete TLV frame.
 
 STOP RETRYING SHIT
@@ -135,7 +137,7 @@ When you encounter a known block that doesn't have the required subblocks, treat
 
 ## Minimum frame types (UDP)
 
-This is if you want to use the TLV format too... But in whatever format, you must also include these sorts of information!
+Resist the temptation to use JSON. Use TLV too. You have to write a TLV parser already, reuse it.
 
 - `PRES`: Sent as the presence message. It must have the following subblocks:
     - `USID`: The `instance_id` as the raw 16-byte representation.
@@ -149,7 +151,7 @@ When you encounter a known block that doesn't have the required subblocks... cop
 
 ## UDP discovery
 
-Bind to `("", config.discovery_port)` using `SO_REUSEADDR` **AND** `SO_REUSEPORT` if present, for cross-platform compatibility.
+Bind to `("", config.discovery_port)` using `SO_BROADCAST`, `SO_REUSEADDR` **AND** `SO_REUSEPORT` if present, for cross-platform compatibility.
 
 Use `instance_id` to filter our own presence message, as a key to an internal peer table, and to silently (without emitting `PeerOffline`) remove an older entry that has the exact same address when a peer restarts on the same port.
 
@@ -159,7 +161,7 @@ Emit a `PeerChanged` event when a peer's address, name or status changes.
 
 Emit a `PeerOffline` event when a peer is removed from the internal active peers list. The reason "goodbye" is used when the peer has broadcasted a goodbye. The reason "timeout" is used when there has been no presence messages from the peer after `config.broadcast_timeout` seconds.
 
-When updating an existing `instance_id`, prefer upgrading to non-loopback IPs (obtained via `recvfrom()`) over loopback IPs.
+When updating an existing `instance_id`, prefer upgrading to non-loopback IPs (obtained via `recvfrom()`) over loopback IPs. Conversely, don't overwrite an existing non-loopback IP with a loopback IP.
 
 Broadcast a presence message every `config.broadcast_interval` seconds and immediately on `set_status()`.
 
@@ -167,17 +169,23 @@ Broadcast a goodbye message on `stop()`.
 
 Remove a peer off of the active list after `config.broadcast_timeout` seconds of no presence messages. But do not close a perfectly good TCP connection to them.
 
+The backend should *at least* trim any status received from other connections to `MAX_STATUS_BYTES` before storing into `PeerInfo`s. Be careful when handling UTF-8 multibyte sequences.
+
 ## TCP
 
-Accept multiple peers. Why do I have to say this? Look at the assignment? Look at `refactor/all_that_mattered script/lib/v1/peer/peer_node.py:375?`
+Accept multiple peers. Why do I have to say this? Look at the assignment? Look at `refactor/all_that_mattered script/lib/v1/peer/peer_node.py:375?` Well Mochi-tan thinks you just didn't tell your Gemini 3.8 Flash-san to follow the requirements more carefully this time!! (╥ ᴗ ╥)
 
-If two peers connect at the same time, resolve the duplication cleanly by a tiebreaking rule (what if... we compare `instance_id`? ദ്ദി ˉ͈̀꒳ˉ͈́ )✧ Most importantly, be consistent.) Don't emit a `PeerDisconnected` for the side that had to close their outcoming connection.
+If two peers connect at the same time, resolve the duplication cleanly by a tiebreaking rule (Mochi-tan proposes... we compare `instance_id`, and the peer with the lower `instance_id` will keep its outgoing connection! Conversely, the peer with the higher `instance_id` will keep its incoming connection! ദ്ദി ˉ͈̀꒳ˉ͈́ ) Don't emit a `PeerDisconnected` for the closed duplicate connection. And since this is within "expect behavior," don't raise any errors.
 
 After the hello exchange, sockets should all be set to blocking mode with no timeouts in the receiver threads.
 
 Release all internal locks before calling `on_event`.
 
 Each socket's write mutex should only be held when sending one complete TLV frame.
+
+When a chat message is received, emit a `MessageReceived` event with the timestamp being `time.time()`.
+
+The backend should *at least* trim any name received from other connections to `MAX_NAME_BYTES` before storing into `PeerInfo`s or event dataclasses. Be careful when handling UTF-8 multibyte sequences.
 
 ### TCP file transfer
 
@@ -192,5 +200,3 @@ Don't emit a `TransferProgress` event after a `TransferFinished` event of the sa
 Save downloads in the directory `downloads_dir` with sanitized filenames, and without overwriting existing files by implementing a collision suffix. Verify total size on `FEND`. If the directory doesn't exist, make one.
 
 On any failure, disconnect or stop() before transfer completion, close the file handle, delete the partially-downloaded file, and emit a `TransferFailed` event.
-
-(WIP)
