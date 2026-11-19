@@ -1,12 +1,12 @@
 # Specifications for the backend
 
-Refer to the assignment brief for the core requirements needed.
+Refer to the assignment brief for the core requirements.
 
 ## Structure
 
 Backend code must be placed within the `backend/` directory. Don't do `v1` stuff because guess what git is for?
 
-All code must only import from standard Python libraries.
+All backend code must import only from standard Python libraries.
 
 Importing any module must never cause any side-effects.
 
@@ -28,16 +28,16 @@ User-facing messages should go through the event system instead of the log funct
 
 ## Public interfaces
 
-`backend/__init__.py` must expose a class named `PeerBackend` that have these:
+`backend/__init__.py` must expose a class named `PeerBackend` that has these methods:
 
 - `__init__(config: BackendConfig, on_event: Callable[[BackendEvent], None])`: Stores config and event callback. Must not block.
 - `start() -> None`: Binds TCP socket, starts UDP discovery and TCP acceptor. Calling `start()` twice should raise a `BackendError`. Raise a `BackendError` if it's called after calling `stop()`. Should not block for a long time.
-- `tcp_port : int | None`: A read-only property, returning what the user's current TCP port is. Must not block.
-- `stop() -> None`: Sends a goodbye signal to UDP discovery, closes all open TCP sockets, aborts and deletes any partial downloads, and stops threads. The method is idempotent (look it up (๑ > ᴗ < ๑) ehehe). Allowed to block for short time.
+- `tcp_port: int | None`: A read-only property, returning what the user's current TCP port is. Must not block.
+- `stop() -> None`: Sends a goodbye signal to UDP discovery, closes all open TCP sockets, aborts and deletes any partial downloads, and stops threads. The method is idempotent (look it up (๑ > ᴗ < ๑) ehehe). Allowed to block for a short time.
 - `get_peers() -> list[PeerInfo]`: Returns an **unordered** list of the current discovered peers. Must not block.
-- `set_status(status: str) -> None`: Set the user's status and immediately broadcasts it. Must preserve custom statuses like `🍡🍡mgmg`. Must not block.
-- `connect(addr: PeerAddress) -> None`: Opens TCP connection to the address, and exchanges a hello if not already connected. Emit a `PeerConnected` event once done. Is a no-op if socket is already connected. Raise a `BackendError` if not reachable. May block up to `config.connect_timeout` seconds (this is the total budget of the function).
-- `disconnect(addr: PeerAddress) -> None`: Sends a leave (but don't block waiting on a dead peer) and shutdown + close only the address's socket. Emit a `PeerDisconnected` event once done. Abort any active file transfers on the socket. Is a no-op if socket is already closed. Must not block.
+- `set_status(status: str) -> None`: Sets the user's status and immediately broadcasts it. Must preserve custom statuses like `🍡🍡mgmg`. Must not block.
+- `connect(addr: PeerAddress) -> None`: Opens TCP connection to the address, and exchanges a hello if not already connected. Emit a `PeerConnected` event once done. Is a no-op if the socket is already connected. Raise a `BackendError` if not reachable. May block up to `config.connect_timeout` seconds (this is the total budget of the function).
+- `disconnect(addr: PeerAddress) -> None`: Sends a leave (but don't block waiting on a dead peer) and shuts-down + closes only the address's socket. Abort any active file transfers on the socket. Emit a `PeerDisconnected` event once done. Is a no-op if the socket is already closed. Must not block.
 - `send_message(addr: PeerAddress, message: str) -> None`: Sends a chat message to the address. Raise `BackendError` if not connected. If the socket broke before or during the sending, tear down the socket cleanly before raising `BackendError`. Must not block.
 - `send_file(addr: PeerAddress, filepath: str | Path) -> UUID`: Sends a file to the address. Raise `BackendError` if not connected or if the path points to something that's not a file. Return the `transfer_id`. Must not block.
 
@@ -50,7 +50,7 @@ We are doing this to get clout for backwards-and-forwards-compatibility.
 [Type–length–value](https://en.wikipedia.org/wiki/Type%E2%80%93length%E2%80%93value)
 
 All stuff sent via TCP sockets shall follow this format:
-- First 4 bytes: A label saying what type the data is (e.g "HELO", "LEAV", "CHAT", ...)
+- First 4 bytes: A label saying what type the data is (e.g., "HELO", "LEAV", "CHAT", ...)
 - Next 4 bytes: An unsigned 4-byte integer, storing the byte size of the data in network-order.
 - The data: ... the data. "( – ⌓ – )
 
@@ -90,7 +90,7 @@ We shall call the block at the outermost layer a "frame," inner layers as "subbl
 
 But remember the most important rule when dealing with data of this kind. **DO NOT ERROR WHEN YOU ENCOUNTER AN UNKNOWN TYPE. SKIP IT. IGNORE IT.** ദ്ദി(˵ •̀ ᴗ - ˵ ) ✧
 
-When you encounter a block with an unknown tag, read the data size, read exactly that many bytes from the socket, and discard it.
+When you encounter a block with an unknown tag, read the data size, read exactly that many bytes from the socket, and discard them.
 
 When you encounter a block with a size that's too big (size ≥ 16 MiB) or when a subblock's end spills over the parent block's end, everything is corrupted! There's no hope left! Emit a `BackendNotice` (and a `TransferFailed` if any file transfers are currently happening) and disconnect the socket. Remember to check the sizes before doing any reads.
 
@@ -151,7 +151,7 @@ When you encounter a known block that doesn't have the required subblocks... cop
 
 ## UDP discovery
 
-Bind to `("", config.discovery_port)` using `SO_BROADCAST`, `SO_REUSEADDR` **AND** `SO_REUSEPORT` if present, for cross-platform compatibility.
+Bind the UDP listener to `("", config.discovery_port)` using `SO_BROADCAST`, `SO_REUSEADDR` **AND** `SO_REUSEPORT` if present, for cross-platform compatibility.
 
 Use `instance_id` to filter our own presence message, as a key to an internal peer table, and to silently (without emitting `PeerOffline`) remove an older entry that has the exact same address when a peer restarts on the same port.
 
@@ -169,13 +169,13 @@ Broadcast a goodbye message on `stop()`.
 
 Remove a peer off of the active list after `config.broadcast_timeout` seconds of no presence messages. But do not close a perfectly good TCP connection to them.
 
-The backend should *at least* trim any status received from other connections to `MAX_STATUS_BYTES` before storing into `PeerInfo`s. Be careful when handling UTF-8 multibyte sequences.
+The backend should *at least* trim any status received from other connections to `MAX_STATUS_BYTES` before storing it into `PeerInfo`s. Be careful when handling UTF-8 multibyte sequences.
 
 ## TCP
 
-Accept multiple peers. Why do I have to say this? Look at the assignment? Look at `refactor/all_that_mattered script/lib/v1/peer/peer_node.py:375?` Well Mochi-tan thinks you just didn't tell your Gemini 3.8 Flash-san to follow the requirements more carefully!! (╥ ᴗ ╥)
+Accept multiple peers. Why do I have to say this? Look at the assignment? Look at `refactor/all_that_mattered script/lib/v1/peer/peer_node.py:375`? Well Mochi-tan thinks you just didn't tell your Gemini 3.8 Flash-san to follow the requirements more carefully!! (╥ ᴗ ╥)
 
-If two peers connect at the same time, resolve the duplication cleanly by a tiebreaking rule (Mochi-tan proposes... we compare `instance_id`, and the peer with the lower `instance_id` will keep its outgoing connection! Conversely, the peer with the higher `instance_id` will keep its incoming connection! ദ്ദി ˉ͈̀꒳ˉ͈́ ) Don't emit a `PeerDisconnected` for the closed duplicate connection. And since this is within "expect behavior," don't raise any errors.
+If two peers connect at the same time, resolve the duplication cleanly by a tiebreaking rule (Mochi-tan proposes... we compare `instance_id`, and the peer with the lower `instance_id` will keep its outgoing connection! Conversely, the peer with the higher `instance_id` will keep its incoming connection! ദ്ദി ˉ͈̀꒳ˉ͈́ ) Don't emit a `PeerDisconnected` for the closed duplicate connection. And since this is within "expected behavior," don't raise any errors.
 
 After the hello exchange, sockets should all be set to blocking mode with no timeouts in the receiver threads.
 
@@ -185,13 +185,13 @@ Each socket's write mutex should only be held when sending one complete TLV fram
 
 When a chat message is received, emit a `MessageReceived` event with the timestamp being `time.time()`.
 
-The backend should *at least* trim any name received from other connections to `MAX_NAME_BYTES` before storing into `PeerInfo`s or event dataclasses. Be careful when handling UTF-8 multibyte sequences.
+The backend should *at least* trim any name received from other connections to `MAX_NAME_BYTES` before storing it into `PeerInfo`s or event dataclasses. Be careful when handling UTF-8 multibyte sequences.
 
 ### TCP file transfer
 
 Stream files, starting with an `FBEG` frame, then many `FDAT` frames in order, and ending with an `FEND` frame. Acquire and release the write mutex when sending each frame. 0-byte files must be supported.
 
-Throttle `TransferProgress` events to something reasonable. You may send one at 0%, then every increments of 5% OR every 0.2 seconds, and 100%.
+Throttle `TransferProgress` events to something reasonable. You must send one at 0% and 100%, and send mid-transfer progress updates at a throttled frequency (Mochi-tan proposes... for every increment of 5% OR every 0.2 seconds! ( ◡̀  ̫ ◡́) ✧)
 
 Emit a `TransferFinished` event when the transfer... finishes... (๑ > ᴗ < ๑)
 
