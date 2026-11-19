@@ -60,7 +60,7 @@ class TransferInfo:
     addr: PeerAddress   # Peer's listening address.
     name: str           # Peer's name.
     filename: str       # Filename of the file being sent or received.
-    # "upload" if the user sending, "download" if the user is receiving.
+    # "upload" if the user is sending, "download" if the user is receiving.
     direction: Literal["upload", "download"]
     bytes_transferred: int
     bytes_total: int    # Expected total size.
