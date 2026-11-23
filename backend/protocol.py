@@ -13,6 +13,8 @@ import socket
 import struct
 import uuid
 
+from .data_types import MAX_NAME_BYTES, MAX_STATUS_BYTES
+
 # Maximum frame size allowed across network (16 MiB)
 MAX_FRAME_SIZE: int = 16 * 1024 * 1024
 HEADER_FORMAT: str = "!4sI"
@@ -123,8 +125,27 @@ def read_frame(sock: socket.socket) -> tuple[bytes, bytes] | None:
 
 # Specific frame builders
 
+def truncate_utf8_bytes(text: str, max_bytes: int) -> bytes:
+    """Encodes text to UTF-8 and truncates cleanly at a valid codepoint boundary."""
+    if max_bytes <= 0:
+        return b""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return encoded
+    # Step back over any trailing continuation bytes (10xxxxxx) if a codepoint spans max_bytes
+    end = max_bytes
+    while end > 0 and (encoded[end] & 0xC0) == 0x80:
+        end -= 1
+    return encoded[:end]
+
+
+def trim_utf8(text: str, max_bytes: int) -> str:
+    """Truncates a string so its UTF-8 encoding does not exceed max_bytes."""
+    return truncate_utf8_bytes(text, max_bytes).decode("utf-8")
+
+
 def pack_helo(usid: uuid.UUID, name: str, port: int) -> bytes:
-    name_bytes = name.encode("utf-8")[:64]
+    name_bytes = truncate_utf8_bytes(name, MAX_NAME_BYTES)
     port_bytes = struct.pack("!H", port)
     return pack_subblocks(TAG_HELO, [
         (TAG_USID, usid.bytes),
@@ -167,9 +188,9 @@ def pack_leav() -> bytes:
 
 
 def pack_pres(usid: uuid.UUID, name: str, port: int, status: str) -> bytes:
-    name_bytes = name.encode("utf-8")[:64]
+    name_bytes = truncate_utf8_bytes(name, MAX_NAME_BYTES)
     port_bytes = struct.pack("!H", port)
-    stat_bytes = status.encode("utf-8")[:128]
+    stat_bytes = truncate_utf8_bytes(status, MAX_STATUS_BYTES)
     return pack_subblocks(TAG_PRES, [
         (TAG_USID, usid.bytes),
         (TAG_NAME, name_bytes),

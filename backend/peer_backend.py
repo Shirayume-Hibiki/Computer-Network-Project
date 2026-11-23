@@ -40,6 +40,7 @@ from .data_types import (
     TransferProgress,
 )
 from .protocol import (
+    MAX_FRAME_SIZE,
     TAG_CHAT,
     TAG_DATA,
     TAG_FBEG,
@@ -67,6 +68,7 @@ from .protocol import (
     pack_pres,
     parse_subblocks_dict,
     read_frame,
+    trim_utf8,
     unpack_subblocks,
 )
 
@@ -110,13 +112,24 @@ class _IncomingTransfer:
         self.dest_path = dest_path
         self.file_handle = file_handle
         self.bytes_received = 0
-        self.last_progress_time = 0.0
+        self.last_progress_time = time.time()
         self.last_progress_pct = 0.0
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Sanitizes a received filename across POSIX/Windows path separators and reserved chars."""
+    base_name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    invalid_chars = set('<>:"/\\|?*')
+    cleaned = "".join("_" if (ord(ch) < 32 or ch in invalid_chars) else ch for ch in base_name)
+    cleaned = cleaned.strip().rstrip(".")
+    if not cleaned or cleaned in {".", ".."}:
+        return "download"
+    return cleaned
 
 
 def _get_unique_dest_path(downloads_dir: Path, filename: str) -> Path:
     """Generates a collision-free destination file path using a numeric suffix."""
-    safe_name = Path(filename).name
+    safe_name = _sanitize_filename(filename)
     base, ext = os.path.splitext(safe_name)
     target = downloads_dir / safe_name
     counter = 1
@@ -138,6 +151,7 @@ class PeerBackend:
 
         self._instance_id: uuid.UUID | None = None
         self._tcp_port: int | None = None
+        self._name = self._trim_name(config.name)
         self._status = self._trim_status(config.status)
 
         self._started = False
@@ -149,7 +163,7 @@ class PeerBackend:
         self._peers: dict[uuid.UUID, PeerInfo] = {}
 
         # Active TCP Connections
-        self._conn_lock = threading.Lock()
+        self._conn_lock = threading.RLock()
         self._connections: dict[PeerAddress, _PeerConnection] = {}
         self._conns_by_instance: dict[uuid.UUID, _PeerConnection] = {}
 
@@ -186,17 +200,11 @@ class PeerBackend:
     # String trimming helpers respecting UTF-8 byte limits
     @staticmethod
     def _trim_name(name: str) -> str:
-        b = name.encode("utf-8")
-        if len(b) <= MAX_NAME_BYTES:
-            return name
-        return b[:MAX_NAME_BYTES].decode("utf-8", errors="ignore")
+        return trim_utf8(name, MAX_NAME_BYTES)
 
     @staticmethod
     def _trim_status(status: str) -> str:
-        b = status.encode("utf-8")
-        if len(b) <= MAX_STATUS_BYTES:
-            return status
-        return b[:MAX_STATUS_BYTES].decode("utf-8", errors="ignore")
+        return trim_utf8(status, MAX_STATUS_BYTES)
 
     # Property
     @property
@@ -275,6 +283,7 @@ class PeerBackend:
             if not self._started or self._stopped:
                 return
             self._stopped = True
+            self._tcp_port = None
 
         self._log(LogLevel.INFO, "PeerBackend stopping...")
 
@@ -295,6 +304,7 @@ class PeerBackend:
         self._log(LogLevel.INFO, "PeerBackend stopped cleanly.")
 
     def _cleanup_all_sockets(self) -> None:
+        self._tcp_port = None
         for sock_attr in ("_tcp_server_sock", "_udp_listen_sock", "_udp_broadcast_sock"):
             sock = getattr(self, sock_attr, None)
             if sock is not None:
@@ -344,7 +354,7 @@ class PeerBackend:
             local_instance_id = self._instance_id
 
             # Send HELO
-            helo_bytes = pack_helo(local_instance_id, self.config.name, self._tcp_port or 0)
+            helo_bytes = pack_helo(local_instance_id, self._name, self._tcp_port or 0)
             sock.sendall(helo_bytes)
 
             # Wait for peer's HELO within remaining timeout budget
@@ -365,18 +375,22 @@ class PeerBackend:
 
             peer_usid = uuid.UUID(bytes=subblocks[TAG_USID])
             peer_name = self._trim_name(subblocks[TAG_NAME].decode("utf-8", errors="replace"))
+            struct.unpack("!H", subblocks[TAG_PORT])
 
             # Switch socket to blocking mode without timeouts for receiver thread
             sock.settimeout(None)
 
             # Check duplicate simultaneous connection tiebreaker
+            conn_to_drop: _PeerConnection | None = None
             with self._conn_lock:
                 if peer_usid in self._conns_by_instance:
                     existing = self._conns_by_instance[peer_usid]
                     # Lower instance_id keeps outgoing connection
                     if local_instance_id < peer_usid:
                         # Drop existing incoming connection cleanly
-                        self._close_connection_internal(existing, "Duplicate incoming connection replaced by outgoing", emit_event=False)
+                        conn_to_drop = existing
+                        self._connections.pop(existing.addr, None)
+                        self._conns_by_instance.pop(existing.peer_instance_id, None)
                     else:
                         # Drop this outgoing connection cleanly
                         try:
@@ -388,6 +402,9 @@ class PeerBackend:
                 conn = _PeerConnection(sock, addr, peer_name, peer_usid)
                 self._connections[addr] = conn
                 self._conns_by_instance[peer_usid] = conn
+
+            if conn_to_drop is not None:
+                self._close_connection_internal(conn_to_drop, "Duplicate incoming connection replaced by outgoing", emit_event=False)
 
             # Start receiver thread
             t = threading.Thread(target=self._tcp_rx_loop, args=(conn,), daemon=True, name=f"PeerRx-{peer_name}")
@@ -415,17 +432,17 @@ class PeerBackend:
 
     def _close_connection_internal(self, conn: _PeerConnection, reason: str, emit_event: bool = True) -> None:
         """Closes a connection, aborts transfers on it, and cleans state."""
+        leav_packet = pack_leav()
         with conn.write_lock:
             if conn.closed:
                 return
             conn.closed = True
-
-        # Send LEAV best-effort
-        try:
-            leav_packet = pack_leav()
-            conn.sock.sendall(leav_packet)
-        except Exception:
-            pass
+            # Send LEAV best-effort non-blocking while holding write_lock so frames never interleave
+            try:
+                conn.sock.settimeout(0.0)
+                conn.sock.sendall(leav_packet)
+            except Exception:
+                pass
 
         try:
             conn.sock.shutdown(socket.SHUT_RDWR)
@@ -453,13 +470,17 @@ class PeerBackend:
         with self._conn_lock:
             conn = self._connections.get(addr)
 
-        if conn is None or conn.closed:
+        if conn is None:
             raise BackendError(f"Not connected to {addr.ip}:{addr.port}")
 
         packet = pack_chat(message)
         try:
             with conn.write_lock:
+                if conn.closed:
+                    raise BackendError(f"Not connected to {addr.ip}:{addr.port}")
                 conn.sock.sendall(packet)
+        except BackendError:
+            raise
         except Exception as e:
             self._close_connection_internal(conn, f"Send message failed: {e}", emit_event=True)
             raise BackendError(f"Failed to send message: {e}")
@@ -499,7 +520,7 @@ class PeerBackend:
             return
         packet = pack_pres(
             self._instance_id,
-            self.config.name,
+            self._name,
             self._tcp_port or 0,
             self._status,
         )
@@ -540,26 +561,40 @@ class PeerBackend:
                     continue
 
                 tag, length = struct.unpack_from("!4sI", data, 0)
+                if tag in (TAG_PRES, TAG_GBYE):
+                    if length >= MAX_FRAME_SIZE or 8 + length > len(data):
+                        self._log(LogLevel.WARN, f"Received malformed UDP {tag!r} frame (length={length}, packet_len={len(data)})")
+                        continue
+                else:
+                    # Unknown UDP frame tag: ignore cleanly
+                    continue
+
                 body = data[8:8 + length]
 
                 if tag == TAG_PRES:
-                    subblocks = parse_subblocks_dict(body)
-                    if TAG_USID not in subblocks or TAG_NAME not in subblocks or TAG_PORT not in subblocks or TAG_STAT not in subblocks:
-                        self._log(LogLevel.WARN, "Received PRES frame missing required subblocks")
+                    try:
+                        subblocks = parse_subblocks_dict(body)
+                        if TAG_USID not in subblocks or TAG_NAME not in subblocks or TAG_PORT not in subblocks or TAG_STAT not in subblocks:
+                            self._log(LogLevel.WARN, "Received PRES frame missing required subblocks")
+                            continue
+
+                        peer_usid = uuid.UUID(bytes=subblocks[TAG_USID])
+                        listen_port = struct.unpack("!H", subblocks[TAG_PORT])[0]
+                    except (ValueError, struct.error) as e:
+                        self._log(LogLevel.WARN, f"Received malformed PRES frame: {e}")
                         continue
 
-                    peer_usid = uuid.UUID(bytes=subblocks[TAG_USID])
                     # Filter out our own presence beacon
                     if peer_usid == self._instance_id:
                         continue
 
                     peer_name = self._trim_name(subblocks[TAG_NAME].decode("utf-8", errors="replace"))
-                    listen_port = struct.unpack("!H", subblocks[TAG_PORT])[0]
                     peer_stat = self._trim_status(subblocks[TAG_STAT].decode("utf-8", errors="replace"))
 
                     sender_ip = sender_addr[0]
                     now = time.time()
 
+                    event_to_emit: BackendEvent | None = None
                     with self._peers_lock:
                         existing = self._peers.get(peer_usid)
                         if existing is None:
@@ -572,7 +607,7 @@ class PeerBackend:
 
                             new_peer = PeerInfo(peer_name, peer_stat, peer_addr, now)
                             self._peers[peer_usid] = new_peer
-                            self._emit_event(PeerOnline(new_peer))
+                            event_to_emit = PeerOnline(new_peer)
                         else:
                             # Update existing peer info
                             addr_ip = existing.addr.ip
@@ -585,13 +620,22 @@ class PeerBackend:
                             updated_peer = PeerInfo(peer_name, peer_stat, new_addr, now)
                             self._peers[peer_usid] = updated_peer
                             if changed:
-                                self._emit_event(PeerChanged(updated_peer))
+                                event_to_emit = PeerChanged(updated_peer)
+
+                    if event_to_emit is not None:
+                        self._emit_event(event_to_emit)
 
                 elif tag == TAG_GBYE:
-                    subblocks = parse_subblocks_dict(body)
-                    if TAG_USID not in subblocks:
+                    try:
+                        subblocks = parse_subblocks_dict(body)
+                        if TAG_USID not in subblocks:
+                            self._log(LogLevel.WARN, "Received GBYE frame missing required USID subblock")
+                            continue
+                        peer_usid = uuid.UUID(bytes=subblocks[TAG_USID])
+                    except (ValueError, struct.error) as e:
+                        self._log(LogLevel.WARN, f"Received malformed GBYE frame: {e}")
                         continue
-                    peer_usid = uuid.UUID(bytes=subblocks[TAG_USID])
+
                     with self._peers_lock:
                         peer_info = self._peers.pop(peer_usid, None)
                     if peer_info:
@@ -669,27 +713,36 @@ class PeerBackend:
             local_instance_id = self._instance_id
 
             # Reply with our HELO
-            helo_bytes = pack_helo(local_instance_id, self.config.name, self._tcp_port or 0)
+            helo_bytes = pack_helo(local_instance_id, self._name, self._tcp_port or 0)
             sock.sendall(helo_bytes)
 
             sock.settimeout(None)
 
             # Check duplicate simultaneous connection tiebreaker
+            conn_to_drop: _PeerConnection | None = None
             with self._conn_lock:
                 if peer_usid in self._conns_by_instance:
                     existing = self._conns_by_instance[peer_usid]
                     # Lower instance_id keeps outgoing; higher keeps incoming
                     if local_instance_id < peer_usid:
                         # Drop incoming connection
-                        sock.close()
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
                         return
                     else:
                         # Drop existing outgoing connection
-                        self._close_connection_internal(existing, "Replaced by incoming connection tiebreaker", emit_event=False)
+                        conn_to_drop = existing
+                        self._connections.pop(existing.addr, None)
+                        self._conns_by_instance.pop(existing.peer_instance_id, None)
 
                 conn = _PeerConnection(sock, peer_addr, peer_name, peer_usid)
                 self._connections[peer_addr] = conn
                 self._conns_by_instance[peer_usid] = conn
+
+            if conn_to_drop is not None:
+                self._close_connection_internal(conn_to_drop, "Replaced by incoming connection tiebreaker", emit_event=False)
 
             t = threading.Thread(target=self._tcp_rx_loop, args=(conn,), daemon=True, name=f"PeerRx-{peer_name}")
             t.start()
@@ -741,7 +794,7 @@ class PeerBackend:
 
             except (ConnectionResetError, BrokenPipeError):
                 break
-            except ValueError as ve:
+            except (ValueError, struct.error) as ve:
                 self._emit_event(BackendNotice(f"Corrupted frame from {conn.peer_name}: {ve}"))
                 break
             except Exception as e:
@@ -759,19 +812,40 @@ class PeerBackend:
             raise ValueError("FBEG missing required subblocks")
 
         transfer_id = uuid.UUID(bytes=subblocks[TAG_FTID])
-        filename = subblocks[TAG_FNAM].decode("utf-8", errors="replace")
+        raw_filename = subblocks[TAG_FNAM].decode("utf-8", errors="replace")
+        safe_filename = _sanitize_filename(raw_filename)
         file_size = struct.unpack("!Q", subblocks[TAG_SIZE])[0]
 
-        downloads_dir = self.config.downloads_dir
-        downloads_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = _get_unique_dest_path(downloads_dir, filename)
+        with self._transfers_lock:
+            if transfer_id in self._incoming_transfers:
+                self._log(LogLevel.WARN, f"Ignoring duplicate FBEG for active transfer {transfer_id}")
+                return
 
-        file_handle = open(dest_path, "wb")
+        try:
+            downloads_dir = self.config.downloads_dir
+            downloads_dir.mkdir(parents=True, exist_ok=True)
+            dest_path = _get_unique_dest_path(downloads_dir, safe_filename)
+            file_handle = open(dest_path, "wb")
+        except OSError as e:
+            fail_info = TransferInfo(
+                transfer_id=transfer_id,
+                addr=conn.addr,
+                name=conn.peer_name,
+                filename=safe_filename,
+                direction="download",
+                bytes_transferred=0,
+                bytes_total=file_size,
+                saved_path=None,
+                error=f"Could not open download destination: {e}",
+            )
+            self._emit_event(TransferFailed(fail_info))
+            return
+
         rx = _IncomingTransfer(
             transfer_id=transfer_id,
             addr=conn.addr,
             name=conn.peer_name,
-            filename=filename,
+            filename=safe_filename,
             file_size=file_size,
             dest_path=dest_path,
             file_handle=file_handle,
@@ -784,7 +858,7 @@ class PeerBackend:
             transfer_id=transfer_id,
             addr=conn.addr,
             name=conn.peer_name,
-            filename=filename,
+            filename=safe_filename,
             direction="download",
             bytes_transferred=0,
             bytes_total=file_size,
@@ -810,24 +884,25 @@ class PeerBackend:
         rx.file_handle.write(data)
         rx.bytes_received += len(data)
 
-        # Throttled progress: emit if >= 5% change OR >= 0.2s elapsed
-        now = time.time()
-        pct = (rx.bytes_received / rx.file_size * 100.0) if rx.file_size > 0 else 100.0
-        if (pct - rx.last_progress_pct >= 5.0) or (now - rx.last_progress_time >= 0.2):
-            rx.last_progress_pct = pct
-            rx.last_progress_time = now
-            info = TransferInfo(
-                transfer_id=transfer_id,
-                addr=conn.addr,
-                name=conn.peer_name,
-                filename=rx.filename,
-                direction="download",
-                bytes_transferred=rx.bytes_received,
-                bytes_total=rx.file_size,
-                saved_path=None,
-                error=None,
-            )
-            self._emit_event(TransferProgress(info))
+        # Throttled mid-transfer progress (>= 5% or >= 0.2s); 100% is emitted once on FEND
+        if rx.bytes_received < rx.file_size:
+            now = time.time()
+            pct = rx.bytes_received / rx.file_size * 100.0
+            if (pct - rx.last_progress_pct >= 5.0) or (now - rx.last_progress_time >= 0.2):
+                rx.last_progress_pct = pct
+                rx.last_progress_time = now
+                info = TransferInfo(
+                    transfer_id=transfer_id,
+                    addr=conn.addr,
+                    name=conn.peer_name,
+                    filename=rx.filename,
+                    direction="download",
+                    bytes_transferred=rx.bytes_received,
+                    bytes_total=rx.file_size,
+                    saved_path=None,
+                    error=None,
+                )
+                self._emit_event(TransferProgress(info))
 
     def _handle_fend(self, conn: _PeerConnection, body: bytes) -> None:
         subblocks = parse_subblocks_dict(body)
@@ -869,6 +944,17 @@ class PeerBackend:
             return
 
         # 100% Progress then Finished
+        progress_done_info = TransferInfo(
+            transfer_id=transfer_id,
+            addr=conn.addr,
+            name=conn.peer_name,
+            filename=rx.filename,
+            direction="download",
+            bytes_transferred=rx.bytes_received,
+            bytes_total=rx.file_size,
+            saved_path=None,
+            error=None,
+        )
         done_info = TransferInfo(
             transfer_id=transfer_id,
             addr=conn.addr,
@@ -880,7 +966,7 @@ class PeerBackend:
             saved_path=rx.dest_path,
             error=None,
         )
-        self._emit_event(TransferProgress(done_info))
+        self._emit_event(TransferProgress(progress_done_info))
         self._emit_event(TransferFinished(done_info))
 
 
@@ -888,24 +974,13 @@ class PeerBackend:
 
     def _file_sender_worker(self, conn: _PeerConnection, transfer_id: uuid.UUID, filepath: Path) -> None:
         filename = filepath.name
-        file_size = filepath.stat().st_size
+        file_size = 0
         bytes_sent = 0
-        last_progress_time = 0.0
         last_progress_pct = 0.0
 
-        info = TransferInfo(
-            transfer_id=transfer_id,
-            addr=conn.addr,
-            name=conn.peer_name,
-            filename=filename,
-            direction="upload",
-            bytes_transferred=0,
-            bytes_total=file_size,
-            saved_path=None,
-            error=None,
-        )
-
         try:
+            file_size = filepath.stat().st_size
+
             # 1. Send FBEG
             fbeg_bytes = pack_fbeg(transfer_id, filename, file_size)
             with conn.write_lock:
@@ -913,44 +988,53 @@ class PeerBackend:
                     raise ConnectionResetError("Connection closed before sending FBEG")
                 conn.sock.sendall(fbeg_bytes)
 
+            last_progress_time = time.time()
+            info = TransferInfo(
+                transfer_id=transfer_id,
+                addr=conn.addr,
+                name=conn.peer_name,
+                filename=filename,
+                direction="upload",
+                bytes_transferred=0,
+                bytes_total=file_size,
+                saved_path=None,
+                error=None,
+            )
             self._emit_event(TransferProgress(info))
 
             # 2. Stream FDAT chunks
             with open(filepath, "rb") as f:
-                while bytes_sent < file_size or file_size == 0:
+                while bytes_sent < file_size:
                     chunk = f.read(self.config.file_chunk_size)
-                    if not chunk and file_size > 0:
+                    if not chunk:
                         break
 
-                    if chunk:
-                        fdat_bytes = pack_fdat(transfer_id, chunk)
-                        with conn.write_lock:
-                            if conn.closed:
-                                raise ConnectionResetError("Connection closed mid-transfer")
-                            conn.sock.sendall(fdat_bytes)
+                    fdat_bytes = pack_fdat(transfer_id, chunk)
+                    with conn.write_lock:
+                        if conn.closed:
+                            raise ConnectionResetError("Connection closed mid-transfer")
+                        conn.sock.sendall(fdat_bytes)
 
-                        bytes_sent += len(chunk)
+                    bytes_sent += len(chunk)
 
-                    now = time.time()
-                    pct = (bytes_sent / file_size * 100.0) if file_size > 0 else 100.0
-                    if (pct - last_progress_pct >= 5.0) or (now - last_progress_time >= 0.2):
-                        last_progress_pct = pct
-                        last_progress_time = now
-                        progress_info = TransferInfo(
-                            transfer_id=transfer_id,
-                            addr=conn.addr,
-                            name=conn.peer_name,
-                            filename=filename,
-                            direction="upload",
-                            bytes_transferred=bytes_sent,
-                            bytes_total=file_size,
-                            saved_path=None,
-                            error=None,
-                        )
-                        self._emit_event(TransferProgress(progress_info))
-
-                    if file_size == 0:
-                        break
+                    if bytes_sent < file_size:
+                        now = time.time()
+                        pct = bytes_sent / file_size * 100.0
+                        if (pct - last_progress_pct >= 5.0) or (now - last_progress_time >= 0.2):
+                            last_progress_pct = pct
+                            last_progress_time = now
+                            progress_info = TransferInfo(
+                                transfer_id=transfer_id,
+                                addr=conn.addr,
+                                name=conn.peer_name,
+                                filename=filename,
+                                direction="upload",
+                                bytes_transferred=bytes_sent,
+                                bytes_total=file_size,
+                                saved_path=None,
+                                error=None,
+                            )
+                            self._emit_event(TransferProgress(progress_info))
 
             # 3. Send FEND
             fend_bytes = pack_fend(transfer_id)
