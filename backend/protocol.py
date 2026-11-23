@@ -3,6 +3,7 @@
 ║  Creator:                  Shirayume_Hibiki          ║
 ║  Creation date:            21/11/26                  ║
 ║  Edit dates / contributor:                           ║
+║  23/11/26 Shirayume-Hibiki                           ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -43,8 +44,9 @@ TAG_STAT = b"STAT"
 
 def pack_block(tag: bytes, data: bytes) -> bytes:
     """Packs a single TLV block: 4-byte tag, 4-byte unsigned length, payload."""
-    tag_4 = tag[:4].ljust(4, b" ")
-    return struct.pack(HEADER_FORMAT, tag_4, len(data)) + data
+    if not isinstance(tag, (bytes, bytearray)) or len(tag) != 4:
+        raise ValueError(f"TLV tag must be exactly 4 bytes, got {tag!r}")
+    return struct.pack(HEADER_FORMAT, bytes(tag), len(data)) + data
 
 
 def pack_subblocks(tag: bytes, subblocks: list[tuple[bytes, bytes]]) -> bytes:
