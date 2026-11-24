@@ -280,10 +280,14 @@ class PeerBackend:
     def stop(self) -> None:
         """Sends goodbye signal, closes open sockets, aborts downloads, and stops threads."""
         with self._lifecycle_lock:
-            if not self._started or self._stopped:
+            if self._stopped:
                 return
             self._stopped = True
             self._tcp_port = None
+            was_started = self._started
+
+        if not was_started:
+            return
 
         self._log(LogLevel.INFO, "PeerBackend stopping...")
 
@@ -406,11 +410,12 @@ class PeerBackend:
             if conn_to_drop is not None:
                 self._close_connection_internal(conn_to_drop, "Duplicate incoming connection replaced by outgoing", emit_event=False)
 
-            # Start receiver thread
-            t = threading.Thread(target=self._tcp_rx_loop, args=(conn,), daemon=True, name=f"PeerRx-{peer_name}")
-            t.start()
-
             self._emit_event(PeerConnected(addr, peer_name))
+
+            # Start receiver thread after emitting PeerConnected so rx events never arrive first
+            if not conn.closed:
+                t = threading.Thread(target=self._tcp_rx_loop, args=(conn,), daemon=True, name=f"PeerRx-{peer_name}")
+                t.start()
 
         except Exception as e:
             try:
@@ -744,10 +749,11 @@ class PeerBackend:
             if conn_to_drop is not None:
                 self._close_connection_internal(conn_to_drop, "Replaced by incoming connection tiebreaker", emit_event=False)
 
-            t = threading.Thread(target=self._tcp_rx_loop, args=(conn,), daemon=True, name=f"PeerRx-{peer_name}")
-            t.start()
-
             self._emit_event(PeerConnected(peer_addr, peer_name))
+
+            if not conn.closed:
+                t = threading.Thread(target=self._tcp_rx_loop, args=(conn,), daemon=True, name=f"PeerRx-{peer_name}")
+                t.start()
 
         except Exception as e:
             self._log(LogLevel.DEBUG, f"Incoming handshake error from {client_addr}: {e}")
