@@ -74,6 +74,37 @@ ChatMessage.not-ours > Static
 	text-align: left;
 }
 
+FileMessage
+{
+	width: 1fr;
+}
+
+FileMessage > VerticalGroup
+{
+	width: auto;
+	min-width: 16;
+	max-width: 0.7fr
+}
+
+FileMessage.ours
+{
+	align-horizontal: right;
+}
+
+FileMessage.ours > VerticalGroup
+{
+	border: round $text-primary;
+	border-title-align: right;
+	text-align: right;
+}
+
+FileMessage.not-ours > VerticalGroup
+{
+	border: round $text-secondary;
+	border-title-align: left;
+	text-align: left;
+}
+
 ChatTab > VerticalScroll
 {
 	height: 3fr;

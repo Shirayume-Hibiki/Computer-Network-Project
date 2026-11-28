@@ -8,10 +8,13 @@
 
 import dataclasses
 from dataclasses import dataclass
+from pathlib import Path
 import queue
+import textwrap
 import threading
 import typing
 from typing import Callable
+from uuid import UUID
 
 from textual import events, on, markup, work
 from textual.app import App, ComposeResult
@@ -39,6 +42,7 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
     TextArea,
+    ProgressBar,
 )
 
 from backend.data_types import (
@@ -58,6 +62,8 @@ from backend.data_types import (
     BackendEvent,
     BackendError,
 )
+
+SYSTEM_NAME = "[bold]SYSTEM[/bold]"
 
 class DiscoveryEntry(ListItem):
     _text: Static
@@ -117,7 +123,7 @@ class ChatMessage(HorizontalGroup):
     author: str
     text: str
     is_ours: bool
-    border_title: str
+    static: Static
     def __init__(self, author: str, text: str, is_ours: bool):
         super().__init__()
         self.author = author
@@ -133,6 +139,40 @@ class ChatMessage(HorizontalGroup):
     def compose(self) -> ComposeResult:
         yield self.static
 
+class FileMessage(HorizontalGroup):
+    _static: Static
+    _progress: ProgressBar
+    _vert: VerticalGroup
+    def __init__(self, name: str, transfer: TransferProgress | TransferFinished | TransferFailed):
+        super().__init__()
+        self._static = Static()
+        self._progress = ProgressBar()
+        self._vert = VerticalGroup(self._static, self._progress)
+        self.update(name, transfer)
+
+    def update(self, name: str, transfer: TransferProgress | TransferFinished | TransferFailed) -> None:
+        tr = transfer.transfer
+        self.set_class(tr.direction == "upload", "ours")
+        self.set_class(tr.direction == "download", "not-ours")
+        self._vert.border_title = tr.name if tr.direction == "download" else name
+        match transfer:
+            case TransferProgress(_):
+                self._static.update(f"[bold]{markup.escape(tr.filename)}[/bold]\n{tr.bytes_transferred}/{tr.bytes_total}")
+                self._progress.progress = tr.bytes_transferred
+                self._progress.total = tr.bytes_total
+            case TransferFinished(_):
+                if tr.direction == "download":
+                    path: Path = typing.cast(Path, tr.saved_path)
+                    self._static.update(f"[bold]{markup.escape(tr.filename)}\nSaved at: [/bold]{markup.escape(str(path))}\n{tr.bytes_total}")
+                else:
+                    self._static.update(f"[bold]{markup.escape(tr.filename)}[/bold]\n{tr.bytes_total}")
+            case TransferFailed(_):
+                self._static.update(f"[bold]{markup.escape(tr.filename)}\nFAILED[/bold]")
+                self._progress.total = None
+
+    def compose(self) -> ComposeResult:
+        yield self._vert
+
 class ChatSendReq(Message):
     pass
 
@@ -143,6 +183,26 @@ class ChatSend(Message):
         super().__init__()
         self.text = text
         self.addr = addr
+
+class DisconnectReq(Message):
+    addr: PeerAddress
+    def __init__(self, addr: PeerAddress):
+        super().__init__()
+        self.addr = addr
+
+class CloseReq(Message):
+    addr: PeerAddress
+    def __init__(self, addr: PeerAddress):
+        super().__init__()
+        self.addr = addr
+
+class FileSendReq(Message):
+    addr: PeerAddress
+    path: str | Path
+    def __init__(self, addr: PeerAddress, path: str | Path):
+        super().__init__()
+        self.addr = addr
+        self.path = path
 
 class ChatTextArea(TextArea):
     def on_key(self, event: events.Key) -> None:
@@ -159,6 +219,7 @@ class ChatTab(Vertical):
     _name: str
     _addr: PeerAddress | None
     _mute: bool
+    _transfers: dict[UUID, FileMessage]
     def __init__(self, addr: PeerAddress | None, name: str, mute: bool = False):
         super().__init__()
         self._chat_log = VerticalScroll(id="chat-log")
@@ -168,6 +229,7 @@ class ChatTab(Vertical):
         self._name = name
         self._addr = addr
         self._mute = mute
+        self._transfers = {}
     def append_peer_message(self, ev: MessageReceived) -> None:
         self._chat_log.mount(ChatMessage(markup.escape(ev.name),
                                          markup.escape(ev.text), False))
@@ -183,13 +245,48 @@ class ChatTab(Vertical):
         self.send_message()
 
     def send_message(self) -> None:
-        text = self._chat.text.strip()
+        text = self._chat.text
+        if text.startswith('/'):
+            self._chat.clear()
+            if text == "/disconnect":
+                if self._addr is not None:
+                    self.post_message(DisconnectReq(self._addr))
+            elif text == "/close":
+                if self._addr is not None:
+                    self.post_message(CloseReq(self._addr))
+            elif text.startswith("/sendfile "):
+                if self._addr is not None:
+                    self.post_message(FileSendReq(self._addr, text.removeprefix("/sendfile").strip()))
+            else:
+                help_text = """\
+                        [bold]/help[/bold]: Displays this help message.
+                        [bold]/disconnect[/bold]: Disconnects the current peer.
+                        [bold]/close[/bold]: Closes the tab if peer is disconnected.
+                        [bold]/sendfile[/bold] <file>: Sends a file to the current peer."""
+                if text != "/help":
+                    self.append_system_message(
+                            SYSTEM_NAME,
+                            f"Unrecognized command '{markup.escape(text)}'\n\n{textwrap.dedent(help_text)}")
+                else:
+                    self.append_system_message(SYSTEM_NAME, textwrap.dedent(help_text))
+            return
+        text = text.strip()
         if len(text) == 0:
             return
         self._chat.clear()
         if not self._mute:
             self._chat_log.mount(ChatMessage(self._name, markup.escape(text), True))
         self.post_message(ChatSend(text, self._addr))
+
+    def update_file_message(self, transfer: TransferProgress | TransferFinished | TransferFailed):
+        tr = transfer.transfer
+        if tr.transfer_id not in self._transfers:
+            fm = FileMessage(self._name, transfer)
+            self._transfers[tr.transfer_id] = fm
+            self._chat_log.mount(fm)
+        else:
+            self._transfers[tr.transfer_id].update(self._name, transfer)
+
     def compose(self) -> ComposeResult:
         yield self._chat_log
         with HorizontalGroup():
@@ -207,16 +304,31 @@ class FailConnectEvent:
     name: str | None
     tid: str
 
-SYSTEM_NAME = "[bold]SYSTEM[/bold]"
+@dataclass(frozen=True)
+class CloseFailedEvent:
+    addr: PeerAddress
 
+@dataclass(frozen=True)
+class CloseChatEvent:
+    addr: PeerAddress
+
+@dataclass(frozen=True)
+class FileSendFailEvent:
+    addr: PeerAddress
+    path: str | Path
+    reason: str
+
+AllEvents = (BackendEvent | LogEvent | FailConnectEvent | CloseFailedEvent
+             | CloseChatEvent | FileSendFailEvent)
 class ChatApplication(App):
     TITLE = "Chateaubriand"
     CSS_PATH = "app.tcss"
-    event_queue: queue.SimpleQueue[BackendEvent | LogEvent | FailConnectEvent]
+    event_queue: queue.SimpleQueue[AllEvents]
     _disc_list_disp: list[PeerInfo]
     _disc_list_curr: list[PeerInfo]
     _disc_high: DiscoveryEntry | None
-    _connected: dict[PeerAddress, tuple[ChatTab, str]]
+    _connected: dict[PeerAddress, str]
+    _tab_open: dict[PeerAddress, tuple[ChatTab, str]]
     def __init__(self, backend_class, config: BackendConfig):
         super().__init__()
         self.event_queue = queue.SimpleQueue()
@@ -226,6 +338,7 @@ class ChatApplication(App):
         self._disc_list_curr = []
         self._disc_high = None
         self._connected = {};
+        self._tab_open = {};
 
     def _log_put(self, level: LogLevel, text: str) -> None:
         self.event_queue.put(LogEvent(level, text))
@@ -236,7 +349,7 @@ class ChatApplication(App):
     def on_mount(self) -> None:
         self.query_one("#system > ChatTab", ChatTab).append_system_message(
                 SYSTEM_NAME,
-                "Choose a peer from the list!")
+                "Choose a peer from the list to chat!\nType '[bold]/help[/bold]' for more info.")
         self.backend.start()
         self.set_interval(0.05, self._event_drainer)
 
@@ -285,13 +398,17 @@ class ChatApplication(App):
     async def _connect(self, addr: PeerAddress, name: str | None) -> None:
         if addr in self._connected.keys():
             return
-        ct = ChatTab(addr, self.config.name)
-        tp = TabPane(f"{addr.ip}:{addr.port}" if name is None else name, ct)
-        await self.query_one("#active-chats", TabbedContent).add_pane(tp)
+        if addr in self._tab_open.keys():
+            ct = self._tab_open[addr][0]
+            tid = self._tab_open[addr][1]
+        else:
+            ct = ChatTab(addr, self.config.name)
+            tp = TabPane(f"{addr.ip}:{addr.port}" if name is None else name, ct)
+            await self.query_one("#active-chats", TabbedContent).add_pane(tp)
+            tid = typing.cast(str, tp.id)
         ct.append_system_message(SYSTEM_NAME, f"Connecting to {name} ({addr.ip}:{addr.port})...")
-        tid = typing.cast(str, tp.id)
         self.query_one("#active-chats", TabbedContent).active = tid
-        self._connected[addr] = (ct, tid)
+        self._tab_open[addr] = (ct, tid)
         self._connect1(addr, name, tid)
 
     @work(thread=True)
@@ -299,7 +416,7 @@ class ChatApplication(App):
         try:
             self.backend.connect(addr)
         except BackendError as err:
-            del self._connected[addr]
+            del self._tab_open[addr]
             self.event_queue.put(FailConnectEvent(addr, name, tid))
 
     def _search_peers(self, sel: str) -> list[PeerInfo]:
@@ -348,9 +465,29 @@ class ChatApplication(App):
         try:
             self.backend.send_message(ev.addr, ev.text)
         except BackendError as err:
-            self._connected[ev.addr][0].append_system_message(
+            self._tab_open[ev.addr][0].append_system_message(
                     SYSTEM_NAME,
                     f"Failed to send message to {ev.addr.ip}:{ev.addr.port}: {str(err)}")
+
+    @on(DisconnectReq)
+    def _disconnect_req(self, ev: DisconnectReq) -> None:
+        self.backend.disconnect(ev.addr)
+
+    @on(CloseReq)
+    def _close_req(self, ev: CloseReq) -> None:
+        if ev.addr not in self._tab_open.keys():
+            return
+        if ev.addr in self._connected.keys():
+            self.event_queue.put(CloseFailedEvent(ev.addr))
+            return
+        self.event_queue.put(CloseChatEvent(ev.addr))
+
+    @on(FileSendReq)
+    def _file_send_req(self, ev: FileSendReq):
+        try:
+            self.backend.send_file(ev.addr, ev.path)
+        except BackendError as err:
+            self.event_queue.put(FileSendFailEvent(ev.addr, ev.path, str(err)))
 
     async def _event_drainer(self) -> None:
         needs_disc_update: bool = False
@@ -375,21 +512,44 @@ class ChatApplication(App):
                 case PeerOffline(peer=peer):
                     needs_disc_update = True
                 case PeerConnected(addr=addr, name=name):
-                    if addr not in self._connected:
+                    self._connected[addr] = name
+                    if addr not in self._tab_open:
                         ct = ChatTab(addr, self.config.name)
                         tp = TabPane(f"{markup.escape(name)}", ct)
                         await self.query_one("#active-chats", TabbedContent).add_pane(tp)
                         tid = typing.cast(str, tp.id)
-                        self._connected[addr] = (ct, tid)
-                    self._connected[addr][0].append_system_message(
+                        self._tab_open[addr] = (ct, tid)
+                    self._tab_open[addr][0].append_system_message(
                             SYSTEM_NAME,
-                            f"Connected to {name} ({addr.ip}:{addr.port})")
+                            f"Connected to {markup.escape(name)} ({addr.ip}:{addr.port})")
                     tc = self.query_one("#active-chats", TabbedContent)
-                    tab = tc.get_tab(self._connected[addr][1])
+                    tab = tc.get_tab(self._tab_open[addr][1])
+                    tab.label = name
                 case PeerDisconnected(addr=addr, name=name, reason=reason):
-                    pass
+                    del self._connected[addr]
+                    self._tab_open[addr][0].append_system_message(
+                            SYSTEM_NAME,
+                            f"Peer disconnected. Reason: {markup.escape(reason)}")
                 case MessageReceived(addr=addr, name=name, text=text, timestamp=timestamp):
-                    self._connected[addr][0].append_peer_message(ev)
+                    self._tab_open[addr][0].append_peer_message(ev)
+                case CloseFailedEvent(addr=addr):
+                    self._tab_open[addr][0].append_system_message(
+                            SYSTEM_NAME,
+                            "Disconnect the peer before running [bold]'/close'[/bold]")
+                case CloseChatEvent(addr=addr):
+                    self.query_one("#active-chats", TabbedContent).active = "system"
+                    self.query_one("#active-chats", TabbedContent).remove_pane(self._tab_open[addr][1])
+                    del self._tab_open[addr]
+                case FileSendFailEvent(addr=addr, path=path, reason=reason):
+                    self._tab_open[addr][0].append_system_message(
+                            SYSTEM_NAME,
+                            f"Failed to send {str(path)}. Reason: {markup.escape(reason)}")
+                case TransferProgress(transfer=transfer):
+                    self._tab_open[transfer.addr][0].update_file_message(ev)
+                case TransferFinished(transfer=transfer):
+                    self._tab_open[transfer.addr][0].update_file_message(ev)
+                case TransferFailed(transfer=transfer):
+                    self._tab_open[transfer.addr][0].update_file_message(ev)
                 case _:
                     pass
 
