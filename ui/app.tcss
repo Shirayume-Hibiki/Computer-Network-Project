@@ -1,0 +1,100 @@
+.tab_button
+{
+	border: none;
+	min-width: 0;
+}
+
+#app_tabs
+{
+	width: auto;
+}
+
+Horizontal#main
+{
+	width: 1fr;
+}
+
+#discovery
+{
+	width: 1fr;
+}
+
+#chat-panel
+{
+	width: 3fr;
+}
+
+DiscoveryEntry > HorizontalScroll
+{
+	height: 1;
+	overflow: hidden;
+	scrollbar-visibility: hidden;
+}
+
+DiscoveryEntry > HorizontalScroll > Static
+{
+	width: auto;
+	text-wrap: nowrap;
+}
+
+#active-chats
+{
+	width: 3fr;
+	height: 1fr;
+}
+
+ChatMessage
+{
+	width: 1fr;
+}
+
+ChatMessage > Static
+{
+	width: auto;
+	min-width: 16;
+	max-width: 0.7fr
+}
+
+ChatMessage.ours
+{
+	align-horizontal: right;
+}
+
+ChatMessage.ours > Static
+{
+	border: round $text-primary;
+	border-title-align: right;
+	text-align: right;
+}
+
+ChatMessage.not-ours > Static
+{
+	border: round $text-secondary;
+	border-title-align: left;
+	text-align: left;
+}
+
+ChatTab > VerticalScroll
+{
+	height: 3fr;
+}
+
+ChatTab > HorizontalGroup
+{
+	height: 1fr;
+	min-height: 3;
+	max-height: 5;
+}
+
+ChatTab > HorizontalGroup > TextArea
+{
+	width: 3fr
+}
+
+ChatTab > HorizontalGroup > Button
+{
+	height: 1fr;
+	width: 1fr;
+	min-width: 3;
+	max-width: 5;
+}

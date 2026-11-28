@@ -76,7 +76,7 @@ class MockPeerBackend:
             self._log = config.log
         else:
             self._log = self.log_silent
-        self._peer_list = {}
+        self._peer_list = {PeerAddress("?", 12): PeerInfo(name="fail", addr=PeerAddress("?", 12), status="fail", last_seen=0)}
         self._peer_list_lock = threading.Lock()
         self._peer_thrs = {}
         self._peer_connected = set()
@@ -102,6 +102,9 @@ class MockPeerBackend:
     def stop(self) -> None:
         with self._lifetime_lock:
             if self._lifetime == "finished":
+                return
+            if self._lifetime == "init":
+                self._lifetime = "finished"
                 return
             self._lifetime = "finished"
         with self._peer_dis_cv:
