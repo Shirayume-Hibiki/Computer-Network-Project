@@ -1,3 +1,11 @@
+'''
+╔══════════════════════════════════════════════════════╗
+║  Creator:                  diamboy                   ║
+║  Creation date:            28/11/26                  ║
+║  Edit dates / contributor:                           ║
+╚══════════════════════════════════════════════════════╝
+'''
+
 from backend.data_types import (
     LogLevel,
     PeerAddress,

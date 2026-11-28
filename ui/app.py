@@ -1,3 +1,11 @@
+'''
+╔══════════════════════════════════════════════════════╗
+║  Creator:                  diamboy                   ║
+║  Creation date:            28/11/26                  ║
+║  Edit dates / contributor:                           ║
+╚══════════════════════════════════════════════════════╝
+'''
+
 import dataclasses
 from dataclasses import dataclass
 import queue
@@ -332,6 +340,18 @@ class ChatApplication(App):
             elif i < len(self._disc_list_curr):
                 await disc_list_el.extend([DiscoveryEntry(p) for p in self._disc_list_curr[i:]])
         self._disc_list_disp = self._disc_list_curr
+
+    @on(ChatSend)
+    def _chat_send(self, ev: ChatSend) -> None:
+        if not isinstance(ev.addr, PeerAddress):
+            return
+        try:
+            self.backend.send_message(ev.addr, ev.text)
+        except BackendError as err:
+            self._connected[ev.addr][0].append_system_message(
+                    SYSTEM_NAME,
+                    f"Failed to send message to {ev.addr.ip}:{ev.addr.port}: {str(err)}")
+
     async def _event_drainer(self) -> None:
         needs_disc_update: bool = False
         while True:
