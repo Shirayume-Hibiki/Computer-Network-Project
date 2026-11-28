@@ -1,3 +1,12 @@
+'''
+╔══════════════════════════════════════════════════════╗
+║  Creator:                  Can it be Hibiki?         ║
+║  Creation date:            28/11/26                  ║
+║  Edit dates / contributor:                           ║
+║  28/11/26 diamboy                                    ║
+╚══════════════════════════════════════════════════════╝
+'''
+
 from .data_types import (
     BackendConfig,
     BackendError,
