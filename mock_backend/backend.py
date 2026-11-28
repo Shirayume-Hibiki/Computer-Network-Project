@@ -6,31 +6,32 @@
 ╚══════════════════════════════════════════════════════╝
 '''
 
-from backend.data_types import (
-    LogLevel,
-    PeerAddress,
-    BackendConfig,
-    PeerInfo,
-    TransferInfo,
-    BackendError,
-    PeerOnline,
-    PeerChanged,
-    PeerOffline,
-    PeerConnected,
-    PeerDisconnected,
-    MessageReceived,
-    TransferProgress,
-    TransferFinished,
-    TransferFailed,
-    BackendEvent,
-)
+import random
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
-import random
-import time
 from typing import Literal
 from uuid import UUID, uuid4
+
+from backend.data_types import (
+    BackendConfig,
+    BackendError,
+    BackendEvent,
+    LogLevel,
+    MessageReceived,
+    PeerAddress,
+    PeerChanged,
+    PeerConnected,
+    PeerDisconnected,
+    PeerInfo,
+    PeerOffline,
+    PeerOnline,
+    TransferFailed,
+    TransferFinished,
+    TransferInfo,
+    TransferProgress,
+)
 
 _PEER_SIM: list[tuple[str, str, int, list[tuple[str, float]]]] = [
         ("diamboy", "192.168.1.10", 1000,
@@ -310,7 +311,6 @@ class MockPeerBackend:
         with self._lifetime_lock:
             if self._lifetime != "running":
                 raise BackendError("cannot call send_message() when not running")
-        pass
     def _send_file_sim(self, addr: PeerAddress, file: Path) -> None:
         pass
     def send_file(self, addr: PeerAddress, filepath: str | Path) -> UUID:

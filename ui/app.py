@@ -7,16 +7,15 @@
 '''
 
 import dataclasses
-from dataclasses import dataclass
-from pathlib import Path
 import queue
 import textwrap
-import threading
 import typing
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from uuid import UUID
 
-from textual import events, on, markup, work
+from textual import events, markup, on, work
 from textual.app import App, ComposeResult
 from textual.containers import (
     Horizontal,
@@ -25,42 +24,40 @@ from textual.containers import (
     Vertical,
     VerticalGroup,
     VerticalScroll,
-    Center,
 )
 from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import (
-    Header,
-    Footer,
-    Static,
     Button,
-    OptionList,
     ContentSwitcher,
-    RichLog,
-    ListView,
+    Footer,
+    Header,
     ListItem,
+    ListView,
+    ProgressBar,
+    RichLog,
+    Static,
     TabbedContent,
     TabPane,
     TextArea,
-    ProgressBar,
 )
 
 from backend.data_types import (
-    PeerAddress,
     BackendConfig,
+    BackendError,
+    BackendEvent,
     LogLevel,
-    PeerInfo,
-    PeerOnline,
+    MessageReceived,
+    PeerAddress,
     PeerChanged,
-    PeerOffline,
     PeerConnected,
     PeerDisconnected,
-    MessageReceived,
-    TransferProgress,
-    TransferFinished,
+    PeerInfo,
+    PeerOffline,
+    PeerOnline,
     TransferFailed,
-    BackendEvent,
-    BackendError,
+    TransferFinished,
+    TransferProgress,
 )
 
 SYSTEM_NAME = "[bold]SYSTEM[/bold]"
@@ -368,7 +365,7 @@ class ChatApplication(App):
                     with ListView(id="discovery"):
                         for peer in self._disc_list_curr:
                             yield DiscoveryEntry(peer)
-                    with TabbedContent(id="active-chats"):
+                    with TabbedContent(id="active-chats"): # noqa: SIM117
                         with TabPane("System", id="system"):
                             yield ChatTab(None, "", True)
                 with Vertical(id="settings"):
@@ -396,9 +393,9 @@ class ChatApplication(App):
             await self._connect(addr, peer.name)
 
     async def _connect(self, addr: PeerAddress, name: str | None) -> None:
-        if addr in self._connected.keys():
+        if addr in self._connected:
             return
-        if addr in self._tab_open.keys():
+        if addr in self._tab_open:
             ct = self._tab_open[addr][0]
             tid = self._tab_open[addr][1]
         else:
@@ -415,7 +412,7 @@ class ChatApplication(App):
     def _connect1(self, addr: PeerAddress, name: str | None, tid: str) -> None:
         try:
             self.backend.connect(addr)
-        except BackendError as err:
+        except BackendError:
             del self._tab_open[addr]
             self.event_queue.put(FailConnectEvent(addr, name, tid))
 
@@ -467,7 +464,7 @@ class ChatApplication(App):
         except BackendError as err:
             self._tab_open[ev.addr][0].append_system_message(
                     SYSTEM_NAME,
-                    f"Failed to send message to {ev.addr.ip}:{ev.addr.port}: {str(err)}")
+                    f"Failed to send message to {ev.addr.ip}:{ev.addr.port}: {err!s}")
 
     @on(DisconnectReq)
     def _disconnect_req(self, ev: DisconnectReq) -> None:
@@ -475,9 +472,9 @@ class ChatApplication(App):
 
     @on(CloseReq)
     def _close_req(self, ev: CloseReq) -> None:
-        if ev.addr not in self._tab_open.keys():
+        if ev.addr not in self._tab_open:
             return
-        if ev.addr in self._connected.keys():
+        if ev.addr in self._connected:
             self.event_queue.put(CloseFailedEvent(ev.addr))
             return
         self.event_queue.put(CloseChatEvent(ev.addr))
@@ -505,11 +502,11 @@ class ChatApplication(App):
                     self.query_one("#system > ChatTab", ChatTab).append_system_message(
                             SYSTEM_NAME,
                             f"Failed to connect to {markup.escape(name) + ' ' if name is not None else ''}({addr.ip}:{addr.port}).")
-                case PeerOnline(peer=peer):
+                case PeerOnline(_):
                     needs_disc_update = True
-                case PeerChanged(peer=peer):
+                case PeerChanged(_):
                     needs_disc_update = True
-                case PeerOffline(peer=peer):
+                case PeerOffline(_):
                     needs_disc_update = True
                 case PeerConnected(addr=addr, name=name):
                     self._connected[addr] = name
@@ -530,7 +527,7 @@ class ChatApplication(App):
                     self._tab_open[addr][0].append_system_message(
                             SYSTEM_NAME,
                             f"Peer disconnected. Reason: {markup.escape(reason)}")
-                case MessageReceived(addr=addr, name=name, text=text, timestamp=timestamp):
+                case MessageReceived(addr=addr, name=name, text=text, timestamp=_):
                     self._tab_open[addr][0].append_peer_message(ev)
                 case CloseFailedEvent(addr=addr):
                     self._tab_open[addr][0].append_system_message(
@@ -543,7 +540,7 @@ class ChatApplication(App):
                 case FileSendFailEvent(addr=addr, path=path, reason=reason):
                     self._tab_open[addr][0].append_system_message(
                             SYSTEM_NAME,
-                            f"Failed to send {str(path)}. Reason: {markup.escape(reason)}")
+                            f"Failed to send {path!s}. Reason: {markup.escape(reason)}")
                 case TransferProgress(transfer=transfer):
                     self._tab_open[transfer.addr][0].update_file_message(ev)
                 case TransferFinished(transfer=transfer):

@@ -9,8 +9,8 @@
 import argparse
 import random
 
-from backend.data_types import BackendConfig
 from backend import PeerBackend
+from backend.data_types import BackendConfig
 from mock_backend import MockPeerBackend
 from ui import ChatApplication
 

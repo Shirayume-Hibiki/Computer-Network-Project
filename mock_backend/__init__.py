@@ -6,4 +6,4 @@
 ╚══════════════════════════════════════════════════════╝
 '''
 
-from mock_backend.backend import MockPeerBackend
+from mock_backend.backend import MockPeerBackend as MockPeerBackend
