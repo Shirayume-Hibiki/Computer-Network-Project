@@ -3,6 +3,7 @@
 ║  Creator:                  Shirayume_Hibiki          ║
 ║  Creation date:            21/11/26                  ║
 ║  Edit dates / contributor:                           ║
+║  28/11/26 diamboy                                    ║
 ╚══════════════════════════════════════════════════════╝
 '''
 
@@ -371,7 +372,7 @@ class PeerBackend:
                 raise ConnectionResetError("Connection closed before receiving HELO")
             tag, body = frame
             if tag != TAG_HELO:
-                raise ValueError(f"Expected HELO frame, received {tag}")
+                raise ValueError(f"Expected HELO frame, received {tag!r}")
 
             subblocks = parse_subblocks_dict(body)
             if TAG_USID not in subblocks or TAG_NAME not in subblocks or TAG_PORT not in subblocks:
@@ -796,7 +797,7 @@ class PeerBackend:
 
                 else:
                     # Unknown type: skip/ignore as per protocol spec
-                    self._log(LogLevel.DEBUG, f"Ignoring unknown frame type: {tag}")
+                    self._log(LogLevel.DEBUG, f"Ignoring unknown frame type: {tag!r}")
 
             except (ConnectionResetError, BrokenPipeError):
                 break
